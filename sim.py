@@ -4,6 +4,8 @@ import pylab as P
 import time
 import scipy.optimize as O
 
+car_length = 0.1
+
 def genpath():
   """Generate a random smooth path, represented as an implicit
   function f(x)=0, x \in R^2.
@@ -23,7 +25,7 @@ def genpath():
     "||x-u||"
     return sqrt( sum((X-u)**2,axis=1) )
   def dcircle(X,u):
-    "d||x-u|| = (x-u) / ||x-u||"
+    """d||x-u|| = (x-u) / ||x-u||"""
     return (X-u) / circle(X,u)
 
   def path(X,deriv=False):
@@ -31,14 +33,14 @@ def genpath():
     p = w0 * circle(X,u0) + w1 * circle(X,u1)
     if not deriv:
       return p
-
     dp = w0 * dcircle(X,u0) + w1 * dcircle(X,u1)
     return p,dp
 
-  path.params = {'u0': u0, 'u1' : u1,
-                 'w0' : w0, 'w1' : w1}
-
+  path.params = {'u0': u0, 'u1': u1,
+                 'w0': w0, 'w1': w1}
+  print path.params
   return path
+
 
 def draw_path(ax, path):
   """draw the given the path function on the matplotlib axis"""
@@ -95,11 +97,22 @@ class CarDrawing():
     self.trail.remove()
 
 
-def draw_car(x,y,dx,dy,theta, **kwargs):
+def draw_car(ax, s, **kwargs):
+  # parse the state
+  (x,y),(dx,dy),theta = s
+
+  # normalize the velocity vector
+  speed = sqrt(dx**2+dy**2)
+  dx /= speed
+  dy /= speed
+
   # rotation matrix for the car relative to the current universe
   R = array([(dx, -dy),
              (dy,  dx)])
-  assert linalg.det(R) == 1.
+  assert linalg.det(R) > 0.
+
+  # scale the coordinate system so that the car's length is 1
+  R *= car_length
 
   # rotation matrix of the wheels relative to the car
   Rwheel = array([(cos(theta),-sin(theta)),
@@ -131,30 +144,37 @@ def draw_car(x,y,dx,dy,theta, **kwargs):
                          [axle[1,1] + wheel[:,1]],
                         **kwargs)
   hcenter = P.Line2D([x], [y], marker='o', ms=5, mec=None, **kwargs)
-  return (hbody, haxle, hleftwheel, hrightwheel, hcenter)
+
+  # the artists for the car
+  hs =  (hbody, haxle, hleftwheel, hrightwheel, hcenter)
+
+  # add artists to the axis if supplied
+  if ax:
+    for h in hs:
+      ax.add_artist(h)
+
+  return hs
 
 
 def test_draw_car():
   P.ion()
   P.clf()
   P.axis('scaled')
-  P.axis([-4,4,-4,4])
+  P.axis([-1,1,-1,1])
 
-  X = [ (-1.,-.5, cos(pi/3), sin(pi/3), -pi/6),
-        (-1.,-.5, cos(pi/3), sin(pi/3), 0.),
-        (-1.,-.5, cos(pi/3), sin(pi/3), pi/6),
-        (-1.,-.5, cos(0), sin(0), -pi/6),
-        (-1.,-.5, cos(0), sin(0), 0),
-        (-1.,-.5, cos(0), sin(0), pi/6),
+  X = [ ((-1.,-.5), (cos(pi/3), sin(pi/3)), -pi/6),
+        ((-1.,-.5), (cos(pi/3), sin(pi/3)), 0.),
+        ((-1.,-.5), (cos(pi/3), sin(pi/3)), pi/6),
+        ((-1.,-.5), (cos(0), sin(0)), -pi/6),
+        ((-1.,-.5), (cos(0), sin(0)), 0),
+        ((-1.,-.5), (cos(0), sin(0)), pi/6),
         ]
   hs = []
 
   for x in X:
     for h in hs:
       h.remove()
-    hs = draw_car(*x, color='b')
-    for h in hs:
-      P.gca().add_artist(h)
+    hs = draw_car(P.gca(), x, color='b')
     P.draw()
     #time.sleep(1.)
     P.waitforbuttonpress()
@@ -171,7 +191,9 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1):
     drawing = CarDrawing()
     ax.add_artist(drawing.trail)
 
-  for (x,y), (dx,dy),theta in S:
+  for s in S:
+    # parse the state
+    (x,y), (dx,dy),theta  = s
     # append to the trail
     drawing.trail.set_xdata(hstack((drawing.trail.get_xdata(), x)))
     drawing.trail.set_ydata(hstack((drawing.trail.get_ydata(), y)))
@@ -181,40 +203,61 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1):
       drawing.remove_car()
 
     # draw the car
-    drawing.h = draw_car(x,y,dx,dy,theta)
-    for h in drawing.h:
-      ax.add_artist(h)
+    drawing.h = draw_car(ax, s)
 
     if sleep:
       P.draw()
-      P.sleep(sleep)
+      time.sleep(sleep)
 
   P.draw()
 
 
 
-def apply_controls(s0, U):
-  """update the state of the car with the sequence of control signals
-  in U.  this is a generator of states."""
-  for u in U:
-    yield s0
-    s0 = s0 + u
+
+def apply_control(s0,u):
+  "s(u). apply controls u to state s0"
+  # parse arguments
+  x0,dx0,theta0 = s0
+  ddx,dtheta = u
+
+  # speed is ||dx0||
+  speed = sqrt( dx0[0]**2 + dx0[1]**2 )
+  # eta(dx0), the direction of the car
+  eta = dx0/speed
+
+  theta = theta0 + dtheta
+  v = array((cos(theta), sin(theta)))
+  dx = dx0 + v - eta*dot(eta,v)
+  x = x0 + eta * dot(eta,v)
+
+  # aggregate into a state object
+  s = (x,dx,theta)
+
+  return s
 
 
+def test_animate_car():
+  "run the car with constant control input"
+  # initial state
+  x,y,dx,dy,theta = (.4,0,0,.1,pi/12)
+  s0 = ((x,y), (dx,dy), theta)
 
-def one_step_cost(u, path, s0, u0, target_speed, lambda_speed,
-                  max_dtheta, max_theta, deriv):
+  # apply the controls
+  S = [s0]
+  for u in [(0,0)]*10:
+    S.append(apply_control(S[-1],u))
+
+  animate_car(P.gca(), S, remove_car=False, sleep=0)
+  print S
+
+def one_step_cost(u, path, s0, u0, target_speed, lambda_speed, deriv):
   # parse arguments
   x0,dx0,theta0 = s0
   ddx0,dtheta0 = u0
   ddx,dtheta = u
 
-  # the new state
-  theta = theta0 + dtheta
-  v = array((cos(theta), sin(theta)))
-  dx = dx0 + v * ddx
-  x = x0 + dx
-  s = (x,dx,theta)
+  # parse s(u)
+  x,dx,theta = apply_control(s0,u)
 
   res = path(x.reshape(1,2),deriv=deriv)
   if deriv:
@@ -233,17 +276,17 @@ def one_step_cost(u, path, s0, u0, target_speed, lambda_speed,
   # dx/du
   dxdu = array(((cos(theta), -ddx*sin(theta)),
                 (sin(theta),  ddx*cos(theta))))
-  # dpseed_diff/du
-  dspeed_diffdu = 2*dot(x,dxdu)
+  # dspeed_diff/du
+  dspeed_diffdu = 2*dot(dx,dxdu)
 
   # derivative of L at the new state
   dL = dot(dp,dxdu) + lambda_speed * sign(speed_diff) * dspeed_diffdu
 
-  return L,dL
+  return L,dL.ravel()
 
 
-def gradient_controller(path, s0, u0, target_speed, lambda_speed,
-                        max_dtheta, max_theta):
+def greedy_controller(path, s0, u0, target_speed, lambda_speed,
+                      max_dtheta, max_theta, max_ddx):
   """A greedy controller.
 
   The target path is given as a signed distance
@@ -256,6 +299,7 @@ def gradient_controller(path, s0, u0, target_speed, lambda_speed,
 
     s.t. |dtheta| < max_dtheta
          |theta(u)| < max_theta
+         |ddx| < max_ddx
 
   Here, s(u) = (x(u), dx(u), theta(u)) is the updated state after the
   control u has been applied:
@@ -266,45 +310,63 @@ def gradient_controller(path, s0, u0, target_speed, lambda_speed,
   """
   def L(u):
     return one_step_cost(u, path, s0, u0, target_speed, lambda_speed,
-                         max_dtheta, max_theta, deriv=True)
-  res = fmin_l_bfgs_b(L,u0)
+                         deriv=True)
+
+  x0,dx0,theta0 = s0
+
+  # the bounds are:
+  #   -max_dtheta < dtheta < max_dtheta
+  #   -max_theta < theta0+dtheta < max_theta
+  # which we combine into
+  #   max(-max_dtheta, -max_theta-theta0) < theta < min(max_dtheta,max_theta-theta0)
+  bounds=(((-max_ddx, max_ddx),
+          (max(-max_dtheta, -max_theta-theta0),
+           min(max_dtheta, max_theta-theta0))))
+  res = O.minimize(L, array(u0), method='L-BFGS-B', jac=True, bounds=bounds)
+  return res['x']
 
 
 def test_gradient_controller():
   "generate and draw a random path"
   path = genpath()
 
-  x,y,dx,dy,theta = (0,0,0,1,pi/4)
+  x,y,dx,dy,theta = (.4,0,0,.1,pi/12)
   s0 = ((x,y), (dx,dy), theta)
   u0 = 0.1, 0.01
   target_speed = 1.
   lambda_speed = 10.
-  max_dtheta = pi
+  max_dtheta = pi/10
   max_theta = pi
+  max_ddx = 0.01
 
+  # derivative check
   def L(u):
-    return one_step_cost(u, path, s0, u0, target_speed, lambda_speed,
-                         max_dtheta, max_theta, True)
-
+    return one_step_cost(u, path, s0, u0, target_speed, lambda_speed, True)
   du = 1e-4 * random.randn(2)
   numeric = L(u0+du)[0] - L(u0)[0]
   analytic = dot(L(u0)[1], du)
-
   print 'num:', numeric
   print 'ana:', analytic
   assert abs(analytic-numeric)/linalg.norm(du) < 1e-2
-  print 'OK'
-
+  print 'OK derivative'
 
   P.ion()
   P.clf()
   P.axis('scaled')
-  P.axis([-4,4,-4,4])
+  P.axis([-1,1,-1,1])
   ax = P.gca()
   draw_path(ax, path)
 
-  hcar = draw_car(x,y,dx,dy,theta)
+  hcar = draw_car(ax, s0)
   for h in hcar:
-    ax.add_artist(h)
+    h.set(color='k')
+
+
+  print 'u0:', u0
+  u = greedy_controller(path, s0, u0, target_speed, lambda_speed,
+                        max_dtheta, max_theta, max_ddx)
+  print 'u:', u
+  s = apply_control(s0,u)
+  draw_car(ax, s)
 
   P.draw()
