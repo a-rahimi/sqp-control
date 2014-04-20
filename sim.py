@@ -4,6 +4,8 @@ import pylab as P
 import time
 import scipy.optimize as O
 
+P.ion()
+
 car_length = 0.1
 
 def genpath():
@@ -99,12 +101,7 @@ class CarDrawing():
 
 def draw_car(ax, s, **kwargs):
   # parse the state
-  (x,y),(dx,dy),theta = s
-
-  # normalize the velocity vector
-  speed = sqrt(dx**2+dy**2)
-  dx /= speed
-  dy /= speed
+  (x,y),(dx,dy),speed,theta = s
 
   # rotation matrix for the car relative to the current universe
   R = array([(dx, -dy),
@@ -180,7 +177,7 @@ def test_draw_car():
     P.waitforbuttonpress()
 
 
-def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1):
+def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alpha_inc=0):
   """animate the car along the given state sequence. returns an object
   that represent's the car's shape for subsequent animation.  by default,
   produces an animation. but if remove_car=False, draws a final frame with
@@ -191,9 +188,9 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1):
     drawing = CarDrawing()
     ax.add_artist(drawing.trail)
 
-  for s in S:
+  for i,s in enumerate(S):
     # parse the state
-    (x,y), (dx,dy),theta  = s
+    (x,y), (dx,dy),speed,theta  = s
     # append to the trail
     drawing.trail.set_xdata(hstack((drawing.trail.get_xdata(), x)))
     drawing.trail.set_ydata(hstack((drawing.trail.get_ydata(), y)))
@@ -204,6 +201,9 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1):
 
     # draw the car
     drawing.h = draw_car(ax, s)
+    if alpha_inc:
+      for h in drawing.h:
+        h.set(alpha=alpha_inc+i*alpha_inc)
 
     if sleep:
       P.draw()
@@ -213,25 +213,25 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1):
 
 
 
-
 def apply_control(s0,u):
   "s(u). apply controls u to state s0"
   # parse arguments
-  x0,dx0,theta0 = s0
+  x0,n0,speed0,theta0 = s0
   ddx,dtheta = u
 
-  # speed is ||dx0||
-  speed = sqrt( dx0[0]**2 + dx0[1]**2 )
-  # eta(dx0), the direction of the car
-  eta = dx0/speed
-
+  speed = speed0 + ddx
   theta = theta0 + dtheta
-  v = array((cos(theta), sin(theta)))
-  dx = dx0 + v - eta*dot(eta,v)
-  x = x0 + eta * dot(eta,v)
+
+  R = array(((  0,           -tan(theta0)),
+             ( tan(theta0), 0          )))
+  dn = speed0/car_length * dot(R,n0)
+  n = n0 + dn
+  n /= sqrt(n[0]**2 + n[1]**2)
+
+  x = x0 + n*speed
 
   # aggregate into a state object
-  s = (x,dx,theta)
+  s = (x,n,speed,theta)
 
   return s
 
@@ -239,15 +239,16 @@ def apply_control(s0,u):
 def test_animate_car():
   "run the car with constant control input"
   # initial state
-  x,y,dx,dy,theta = (.4,0,0,.1,pi/12)
-  s0 = ((x,y), (dx,dy), theta)
+  x,y,dx,dy,speed,theta = (.6, .2, 0, 1, .04, -pi/12)
+  s0 = (array((x,y)), array((dx,dy)), speed, theta)
 
   # apply the controls
   S = [s0]
-  for u in [(0,0)]*10:
+  for u in [(0,0)]*20:
     S.append(apply_control(S[-1],u))
 
-  animate_car(P.gca(), S, remove_car=False, sleep=0)
+  P.clf()
+  animate_car(P.gca(), S, remove_car=False, sleep=0, alpha_inc=1./len(S))
   print S
 
 def one_step_cost(u, path, s0, u0, target_speed, lambda_speed, deriv):
