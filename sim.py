@@ -31,13 +31,13 @@ def genpath():
     """d||x-u|| = (x-u) / ||x-u||"""
     return (X-u) / circle(X,u)
 
-  def path(X,deriv=False):
+  def path(X,derivs={}):
     """A mixture of two random Gaussians. Closure from genpath"""
     p = w0 * circle(X,u0) + w1 * circle(X,u1)
-    if not deriv:
-      return p
-    dp = w0 * dcircle(X,u0) + w1 * dcircle(X,u1)
-    return p,dp
+    res = {'val': p}
+    if 'dx' in derivs:
+      res['dx'] = w0 * dcircle(X,u0) + w1 * dcircle(X,u1)
+    return res
 
   path.params = {'u0': u0, 'u1': u1,
                  'w0': w0, 'w1': w1}
@@ -50,7 +50,7 @@ def draw_path(ax, path):
 
   # Evaluate the path on a grid
   X,Y = meshgrid(linspace(-1,1,40), linspace(-1,1,40))
-  Z = path(hstack((X.reshape(-1,1), Y.reshape(-1,1)))).reshape(X.shape)
+  Z = path(hstack((X.reshape(-1,1), Y.reshape(-1,1))))['val'].reshape(X.shape)
 
   # representative values of the path function
   v = linspace(Z.min(), Z.max(),10)
@@ -86,7 +86,7 @@ class CarDrawing():
 
   def __init__(self, **kwargs):
     # the trail
-    self.trail = P.Line2D([],[], **kwargs)
+    self.trail = P.Line2D([],[], marker='o', **kwargs)
     # the car itself
     self.h = []
 
@@ -102,9 +102,10 @@ class CarDrawing():
 
 def draw_car(ax, s, **kwargs):
   # parse the state
-  (x,y),(dx,dy),speed,theta = s
+  (x,y),alpha,speed,theta = s
 
   # rotation matrix for the car relative to the current universe
+  dx,dy = cos(alpha),sin(alpha)
   R = array([(dx, -dy),
              (dy,  dx)])
   assert linalg.det(R) > 0.
@@ -160,12 +161,12 @@ def test_draw_car():
   P.axis('scaled')
   P.axis([-1,1,-1,1])
 
-  X = [ ((-1.,-.5), (cos(pi/3), sin(pi/3)), -pi/6),
-        ((-1.,-.5), (cos(pi/3), sin(pi/3)), 0.),
-        ((-1.,-.5), (cos(pi/3), sin(pi/3)), pi/6),
-        ((-1.,-.5), (cos(0), sin(0)), -pi/6),
-        ((-1.,-.5), (cos(0), sin(0)), 0),
-        ((-1.,-.5), (cos(0), sin(0)), pi/6),
+  X = [ ((-.1,-.5), pi/3, 0, -pi/6),
+        ((-.1,-.5), pi/3, 0, 0.),
+        ((-.1,-.5), pi/3, 0, pi/6),
+        ((-.1,-.5), 0, 0, -pi/6),
+        ((-.1,-.5), 0, 0, 0),
+        ((-.1,-.5), 0, 0, pi/6),
         ]
   hs = []
 
@@ -194,7 +195,7 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None):
 
   for s,alpha in itertools.izip(S,alphas):
     # parse the state
-    (x,y), (dx,dy),speed,theta  = s
+    (x,y),_,_,_  = s
     # append to the trail
     drawing.trail.set_xdata(hstack((drawing.trail.get_xdata(), x)))
     drawing.trail.set_ydata(hstack((drawing.trail.get_ydata(), y)))
@@ -218,13 +219,13 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None):
 def test_animate_car():
   "run the car with constant control input"
   # initial state
-  x,y,dx,dy,speed,theta = (.6, .2, 0, 1, .04, -pi/12)
-  s0 = (array((x,y)), array((dx,dy)), speed, theta)
+  x,y,alpha,speed,theta = (.6, .2, pi*.3, .04, -pi/12)
+  s0 = (array((x,y)), alpha, speed, theta)
 
   # apply the controls
   S = [s0]
   for u in [(0.0,0.03)]*20:
-    S.append(apply_control(S[-1],u))
+    S.append(apply_control(S[-1],u)['val'])
 
   P.clf()
   P.axis('equal')
@@ -233,12 +234,12 @@ def test_animate_car():
 
 
 
-def apply_control(s0,u):
+def apply_control(s0,u, derivs={}):
   """s(u). apply controls u to state s0.
 
   With
 
-    s=(x,n,speed,theta)
+    s=(x,alpha,speed,theta)
     u=(ddx,dtheta)
 
   and eta the function that normalizes its vector argument to unit
@@ -246,32 +247,34 @@ def apply_control(s0,u):
 
     speed(u) = speed0 + ddx
     theta(u) = theta0 + dtheta
-    n(u)     = eta(n0 + speed(u)/car_length * tan(theta(u)) * n0^perp)
-    x(u)     = x0 + n(u) * speed
+    alpha(u) = alpha0 + speed/car_length * tan(theta(u))
+    x(u)     = x0 + v(alpha(u)) * speed
   """
   # parse arguments
-  x0,n0,speed0,theta0 = s0
+  x0,alpha0,speed0,theta0 = s0
   ddx,dtheta = u
 
   speed = speed0 + ddx
   theta = theta0 + dtheta
+  alpha = alpha0 + speed/car_length * tan(theta)
+  alpha = alpha % (2*pi)
 
-  dn = speed/car_length * tan(theta) * array((-n0[1],n0[0]))
-  n = n0 + dn
-
-  # renormalize n
-  n /= sqrt(n[0]**2 + n[1]**2)
-
-  x = x0 + n*speed
+  x = x0 + array((cos(alpha), sin(alpha))) * speed
 
   # aggregate into a state object
-  s = (x,n,speed,theta)
 
-  return s
+  res = { 'val': (x,alpha,speed,theta) }
 
+  if 'du' in derivs:
+    dspeeddu = (1,0)
+    dthetadu = (0,1)
+    dalphadu = (1/car_length*tan(theta), speed/car_length * (1+tan(theta)**2))
+    dxdu = speed*outer((-sin(alpha),cos(alpha)), dalphadu) + outer((cos(alpha),sin(alpha)), (1,0))
+    res['du'] = (dxdu, dalphadu, dspeeddu, dthetadu)
 
+  return res
 
-def one_step_cost(u, path, s0, u0, target_speed, lambda_speed, deriv):
+def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
   """
   Evaluate the scalar function
 
@@ -280,49 +283,27 @@ def one_step_cost(u, path, s0, u0, target_speed, lambda_speed, deriv):
   and its dervivatives wrt u if deriv=True.
   """
 
-  lambda_speed = 0. # XXX remove after testing
-
   # parse arguments
-  x0,n0,speed,theta0 = s0
+  x0,alpha0,speed,theta0 = s0
   ddx0,dtheta0 = u0
   ddx,dtheta = u
 
   # parse s(u)
-  x,n,speed,theta = apply_control(s0,u)
-  n = n.reshape(2,1)
+  s = apply_control(s0,u, derivs={'du'})
+  x,alpha,speed,theta = s['val']
 
-  res = path(x.reshape(1,2),deriv=deriv)
-  if deriv:
-    p,dp = res
-  else:
-    p,dp = res,None
+  p = path(x.reshape(1,2),derivs={'dx'})
 
   # L at the new state
-  L = p + lambda_speed * (speed - target_speed)**2
-
-  if not deriv:
-    return L
-
-
-  dn = speed/car_length * tan(theta) * array((-n0[1],n0[0]))
-  nlen = linalg.norm(n0 + dn)
-  dn = dn.reshape(2,1)
-
-  # dn/du = deta(n) [d/dddx, d/ddtheta] o speed/car_length * tan(theta) * (-n0[1],n0[0])
-  dndu = dot((eye(2)-outer(n,n))/nlen,
-             hstack((dn,dn)) * (1./speed, (1+tan(theta)**2) / tan(theta)))
-  # dx/du = [d/dddx, d/ddtheta] n * speed
-  #       = n * [1,0] + dndu * speed
-  dxdu = outer(n,(1,0)) + dndu * speed
+  L = p['val']**2 + lambda_speed * (speed - target_speed)**2
 
   # derivative of L at the new state
-  dL = dot(dp,dxdu) + lambda_speed * 2 * array((speed-target_speed, 0))
+  dL = 2*p['val']*dot(p['dx'],s['du'][0]) + lambda_speed*2*array((speed-target_speed, 0))
 
   return L,dL.ravel()
 
 
-def greedy_controller(path, s0, u0, target_speed, lambda_speed,
-                      max_dtheta, max_theta, max_ddx):
+def greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx):
   """A greedy controller.
 
   The target path is given as a signed distance
@@ -344,20 +325,16 @@ def greedy_controller(path, s0, u0, target_speed, lambda_speed,
     x(u)     =  x0 + dx(u)
     theta(u) =  theta0 + dtheta
   """
-  def L(u):
-    return one_step_cost(u, path, s0, u0, target_speed, lambda_speed,
-                         deriv=True)
-
-  x0,dx0,speed0,theta0 = s0
-
   # the bounds are:
   #   -max_dtheta < dtheta < max_dtheta
   #   -max_theta < theta0+dtheta < max_theta
   # which we combine into
   #   max(-max_dtheta, -max_theta-theta0) < theta < min(max_dtheta,max_theta-theta0)
+  _,_,_,theta0 = s0
   bounds=(((-max_ddx, max_ddx),
           (max(-max_dtheta, -max_theta-theta0),
            min(max_dtheta, max_theta-theta0))))
+
   res = O.minimize(L, array(u0), method='L-BFGS-B', jac=True, bounds=bounds)
   return res['x']
 
@@ -366,43 +343,62 @@ def test_gradient_controller():
   "generate and draw a random path"
   path = genpath()
 
-  x,y,dx,dy,speed,theta = (.5, -.7, 0, 1., .04, -pi/12)
-  s0 = ((x,y), (dx,dy), speed,theta)
+  x,y,alpha,speed,theta = (.5, -.7, pi/2, .04, -pi/4)
+  s0 = ((x,y), alpha, speed,theta)
   u0 = 0.1, 0.01
   target_speed = .1
   lambda_speed = 10.
-  max_dtheta = pi/10
-  max_theta = pi
+  max_dtheta = pi/20
+  max_theta = pi/4
   max_ddx = 0.01
 
-  # derivative check
-  def L(u):
-    return one_step_cost(u, path, s0, u0, target_speed, lambda_speed, True)
-  du = 1e-4 * random.randn(2)
-  numeric = L(u0+du)[0] - L(u0)[0]
-  analytic = dot(L(u0)[1], du)
-  print 'num:', numeric
-  print 'ana:', analytic
-  assert abs(analytic-numeric)/linalg.norm(du) < 1e-2
-  print 'OK derivative'
-
   P.ion()
-  P.clf()
-  P.axis('scaled')
-  P.axis([-1,1,-1,1])
-  ax = P.gca()
+  fig1 = P.figure(0); fig1.clear()
+  ax = fig1.add_subplot(1,1,1)
+  ax.axis('scaled')
+  ax.axis([-1,1,-1,1])
   draw_path(ax, path)
 
-  hcar = draw_car(ax, s0)
-  for h in hcar:
-    h.set(color='k')
+  fig2 = P.figure(1); fig2.clear()
+  ax2 = fig2.add_subplot(2,1,1)
+  ax3 = fig2.add_subplot(2,1,2)
 
 
-  print 'u0:', u0
-  u = greedy_controller(path, s0, u0, target_speed, lambda_speed,
-                        max_dtheta, max_theta, max_ddx)
-  print 'u:', u
-  s = apply_control(s0,u)
-  draw_car(ax, s)
+
+
+  S = [s0]
+  Ls = []
+  for i in xrange(80):
+    def L(u):
+      return one_step_cost(u, path, s0, u0, target_speed, lambda_speed)
+    if True:
+      # derivative check
+      du = 1e-4 * random.randn(2)
+      numeric = L(u0+du)[0] - L(u0)[0]
+      analytic = dot(L(u0)[1], du)
+      print 'num:', numeric
+      print 'ana:', analytic
+      assert abs(analytic-numeric)/linalg.norm(du) < 1e-2
+      print 'OK derivative'
+
+    u0 = greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx)
+    s0 = apply_control(s0,u0)['val']
+    S.append( s0 )
+    Ls.append( L(u0)[0] )
+
+  # show summary statistics
+  ax2.plot(Ls,label='L');
+  ax2.set_ylabel('Controller score')
+  ax3.plot([speed for dx,alpha,speed,theta in S], label='actual')
+  ax3.plot([0, len(S)], [target_speed, target_speed], 'k--', label='target')
+  ax3.legend(loc='best')
+  ax3.set_ylabel('speed')
+
+  # show the car animation
+  #animate_car(ax, S, remove_car=True, sleep=0.1)
+  animate_car(ax, S, remove_car=False, sleep=0,
+              alphas=linspace(0.1,.5,len(S))**2)
 
   P.draw()
+
+  return S
