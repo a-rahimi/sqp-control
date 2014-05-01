@@ -7,6 +7,9 @@ import scipy.optimize as O
 
 P.ion()
 
+# problem parameters
+target_speed = .1
+lambda_speed = 10.
 car_length = 0.1
 
 def genpath():
@@ -27,6 +30,7 @@ def genpath():
   def circle(X,u):
     "||x-u||"
     return sqrt( sum((X-u)**2,axis=1) )
+
   def dcircle(X,u):
     """d||x-u|| = (x-u) / ||x-u||"""
     return (X-u) / circle(X,u)
@@ -274,13 +278,14 @@ def apply_control(s0,u, derivs={}):
 
   return res
 
+
 def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
   """
   Evaluate the scalar function
 
     L(u) = p(x(u)) + lambda_speed * (speed(u)-target_speed)^2
 
-  and its dervivatives wrt u if deriv=True.
+  and its dervivatives wrt u.
   """
 
   # parse arguments
@@ -306,24 +311,16 @@ def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
 def greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx):
   """A greedy controller.
 
-  The target path is given as a signed distance
-  function. s0=(x0,dx0,theta0) is the current state of the car and
-  u0=(ddx,dtheta) is the current control signal.
+  Minimizes a function L. L takes as input the current state s0 and a
+  control signal u0. It returns the tuple of its value and its
+  derivatives wrt u.
 
-  Find a control signal u that minimizes
+  Find a control signal u that minimizes L(u) subject to the following
+  constraints:
 
-    L(u) = p(x(u)) + lambda_speed * | ||dx(u)||^2-target_speed^2 |
-
-    s.t. |dtheta| < max_dtheta
+         |dtheta| < max_dtheta
          |theta(u)| < max_theta
          |ddx| < max_ddx
-
-  Here, s(u) = (x(u), dx(u), theta(u)) is the updated state after the
-  control u has been applied:
-
-    dx(u)    =  dx0 + v(theta) ddx
-    x(u)     =  x0 + dx(u)
-    theta(u) =  theta0 + dtheta
   """
   # the bounds are:
   #   -max_dtheta < dtheta < max_dtheta
@@ -339,19 +336,18 @@ def greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx):
   return res['x']
 
 
-def test_gradient_controller():
-  "generate and draw a random path"
-  path = genpath()
+def deriv_check(L, u, rtol, dh=1e-4):
+  du = dh * random.randn(len(u))
 
-  x,y,alpha,speed,theta = (.5, -.7, pi/2, .04, -pi/4)
-  s0 = ((x,y), alpha, speed,theta)
-  u0 = 0.1, 0.01
-  target_speed = .1
-  lambda_speed = 10.
-  max_dtheta = pi/20
-  max_theta = pi/4
-  max_ddx = 0.01
+  numeric = L(u+du)[0] - L(u)[0]
+  analytic = dot(L(u)[1], du)
 
+  assert abs(analytic-numeric)/linalg.norm(du) < rtol, \
+    'num %s ana %s'%(numeric, analytic)
+
+
+
+def show_results(path, S, costs):
   P.ion()
   fig1 = P.figure(0); fig1.clear()
   ax = fig1.add_subplot(1,1,1)
@@ -363,31 +359,8 @@ def test_gradient_controller():
   ax2 = fig2.add_subplot(2,1,1)
   ax3 = fig2.add_subplot(2,1,2)
 
-
-
-
-  S = [s0]
-  Ls = []
-  for i in xrange(80):
-    def L(u):
-      return one_step_cost(u, path, s0, u0, target_speed, lambda_speed)
-    if True:
-      # derivative check
-      du = 1e-4 * random.randn(2)
-      numeric = L(u0+du)[0] - L(u0)[0]
-      analytic = dot(L(u0)[1], du)
-      print 'num:', numeric
-      print 'ana:', analytic
-      assert abs(analytic-numeric)/linalg.norm(du) < 1e-2
-      print 'OK derivative'
-
-    u0 = greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx)
-    s0 = apply_control(s0,u0)['val']
-    S.append( s0 )
-    Ls.append( L(u0)[0] )
-
   # show summary statistics
-  ax2.plot(Ls,label='L');
+  ax2.plot(cost, label='state cost');
   ax2.set_ylabel('Controller score')
   ax3.plot([speed for dx,alpha,speed,theta in S], label='actual')
   ax3.plot([0, len(S)], [target_speed, target_speed], 'k--', label='target')
@@ -401,4 +374,176 @@ def test_gradient_controller():
 
   P.draw()
 
-  return S
+
+def test_gradient_controller():
+  "generate and draw a random path"
+  path = genpath()
+
+  x,y,alpha,speed,theta = (.5, -.7, pi/2, .04, -pi/4)
+  s0 = ((x,y), alpha, speed,theta)
+  u0 = 0.1, 0.01
+  max_dtheta = pi/20
+  max_theta = pi/4
+  max_ddx = 0.01
+
+  S = [s0]
+  Ls = []
+  for i in xrange(80):
+    def L(u):
+      return one_step_cost(u, path, s0, u0, target_speed, lambda_speed)
+    if True:
+      deriv_check(L, u0, 1e-2)
+
+    u0 = greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx)
+    s0 = apply_control(s0,u0)['val']
+    S.append( s0 )
+    Ls.append( L(u0)[0] )
+
+  show_results(path, S, Ls)
+
+
+
+def planner_sqp(T, L, s0, max_dtheta, max_theta, max_ddx, max_iters=30):
+  """
+  Find control signals u_1...u_T, u_t=(ddx_t,dtheta_t) and the ensuing
+  states s_1...s_T that
+
+  minimize  sum_{t=1}^T  L(s_t)
+  subject to             s_t = f(u_t, s_{t-1})
+                         | dtheta_t | < max_dtheta
+                         | ddx_t | < max_ddx
+
+  Solves this as a Sequential Quadratic program by approximating L by
+  a quadratic, and f by an affine transform.
+  """
+  # the initial sequence of states
+  S = planner_discrete(T, L, u0, s0, max_dtheta, max_theta, max_ddx)
+
+  for it in xrange(max_iters):
+    pass
+
+
+def planner_discrete(T, n, cost, reachable_set, s0):
+  """
+  Find states s_1...s_T that
+
+  minimize  sum_{t=1}^T  cost(s_t)
+  subject to             s_t = reachable_states(s_{t-1})
+
+  Returns the tuple of the value and the state sequence.
+  """
+  # fill out the DP table in a backward pass.
+  #  V_t(s_{t-1}) = min_s c(s) + V_{t+1}(s)   s.t. s reachable from s0
+  #  I_t(s_{t-1}) = argmin_s c(s) + V_{t+1}(s)   s.t. s reachable from s0
+  # Takes O(T d^2)
+  V = inf+zeros((n, T+1))
+  I = zeros((n, T), int)
+  # base case: Q_T(s,s_{T-1}) = 0
+  V[:,-1] = 0
+  for t in xrange(T,0,-1):
+    for si in xrange(states.nstates()):
+      # the cost of transitioning to each reachable state
+      q = [ cost(sj) + DP[t+1][sj]
+            for sj in reachable_set(si) ]
+      # the best state transision
+      sj = argmin( q )
+      # populate the table
+      I[t][si] = sj
+      Q[t][si] = q[sj]
+
+  # find the minimizers starting at V_1(s_0)
+  return [s0] + [ I[t][S[-1]] for t in xrange(1,T+1) ]
+
+
+class DiscreteStates:
+  """Functions that map between a continuous vector representation of
+  the state to an integer."""
+  alpha = None
+  speed = target_speed
+  minx,maxx = -1.,1.
+  miny,maxy = -1.,1.
+
+  ntheta = 8
+  nx = int(ceil( (maxx-minx) / speed ))
+  ny = int(ceil( (maxy-miny) / speed ))
+
+  def nstates(self):
+    return self.nx * self.ny * self.ntheta
+
+  def continuous_state_to_integer(self, s):
+    # parse the state
+    (x,y), _, _,theta = s
+
+    # quantize the components independently
+    ix = round((x-self.minx) / self.speed)
+    iy = round((y-self.miny) / self.speed)
+    itheta = round(theta/(2*pi) * self.ntheta)
+
+    # bijection from (ix,iy,itheta) to [0...nx*ny*ntheta]
+    return (iy* self.nx + ix)* self.ntheta + itheta
+
+  def integer_state_to_continuous(self, si):
+    # bijection from [0...nx*ny*ntheta] to (ix,iy,itheta)
+    r, itheta = divmod(si, self.ntheta)
+    iy, ix = divmod(r, self.nx)
+
+    # map to real
+    x = ix * self.speed + self.minx
+    y = iy * self.speed + self.miny
+    theta = itheta * 2*pi/self.ntheta
+
+    return ((x,y), self.alpha, self.speed, theta)
+
+
+def test_discrete_states():
+  disc = DiscreteStates()
+
+  # inspect every state
+  for si in xrange(disc.nstates()):
+    s = disc.integer_state_to_continuous(si)
+
+    # ensure it's a valid state
+    (x,y), _, _,theta = s
+    assert x>=disc.minx, '%s is out of bounds'%x
+    assert x<=disc.maxx, '%s is out of bounds'%x
+    assert y>=disc.miny, '%s is out of bounds'%x
+    assert y<=disc.maxy, '%s is out of bounds'%x
+    assert theta>=0, '%s is out of bounds'%x
+    assert theta<=2*pi, '%s is out of bounds'%x
+
+    # ensure it convert back to the same integer
+    ti = disc.continuous_state_to_integer(s)
+    assert ti == si, 'rediscritized state #%d is #%d. continuous is %s'%(si,ti,s)
+
+  print 'OK'
+
+
+def test_discrete_planner():
+  disc = DiscreteStates()
+
+  path = genpath()
+  s0 = ((.5, -.7), pi/2, .04, -pi/4)
+
+  def cost(si):
+    "the cost of a discrete state s0."
+    xy,_,_,_ = disc.integer_state_to_continuous(si)
+
+    return path(xy)['val']
+
+  def reachable_states(si):
+    "the set of discrete states reachable from discrete state s0"
+    (x,y),alpha,speed,theta = disc.integer_state_to_continuous(s0)
+
+    si = [
+      self.continuous_state_to_integer(x + self.speed * cos(theta+dtheta),
+                                       y + self.speed * sin(theta+dtheta),
+                                       alpha,
+                                       speed,
+                                       theta + dtheta)
+          for dtheta in (-2*pi/self.ntheta, 0, 2*pi/self.ntheta) ]
+
+  Si = planner_discrete(10, disc.nstates(), cost, reachable_states,
+                        disc.continuous_state_to_integer(s0))
+
+  # convert to continuous
+  S = [si_to_s(si) for si in Si]
