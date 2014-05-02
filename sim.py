@@ -424,7 +424,7 @@ def planner_sqp(T, L, s0, max_dtheta, max_theta, max_ddx, max_iters=30):
     pass
 
 
-def planner_discrete_stationary(T, nstates, cost, reachable_set, s0, gamma,
+def planner_discrete_stationary(gamma, nstates, cost, reachable_set,
                                 max_iterations=1000):
   """
   Find states s_1...s_T that
@@ -443,16 +443,23 @@ def planner_discrete_stationary(T, nstates, cost, reachable_set, s0, gamma,
 
   # value function. initialize with the immediate cost
   v = c0
+  vnew = v.copy()
 
   for it in xrange(max_iterations):
     for si in xrange(nstates):
       vnew[si], P[si] = min( (c0[sj] + gamma * v[sj], sj)
                              for sj in reachable_set(si) )
 
-    if vnew == v:
+    if all(vnew == v):
       break
     v = vnew
+  print 'ran for %d iterations'%it
+  return P
 
+def apply_policy(s0,P,T):
+  """Apply the given policy function T times, starting with s0. Return
+  the sequence of states generated.
+  """
   Si = [s0]
   for t in xrange(1,T):
     Si.append( P[Si[-1]] )
@@ -591,13 +598,16 @@ def test_discrete_planner():
     xy,_,_,_ = disc.to_continuous(si)
     return path(reshape(xy,(1,2)))['val']**2
 
-  Si = planner_discrete(10, disc.nstates(), cost, disc.reachable_states,
-                        disc.to_integer(s0))
+  #Si = planner_discrete(10, disc.nstates(), cost, disc.reachable_states,
+  #                      disc.to_integer(s0))
+  P = planner_discrete_stationary(0.8, disc.nstates(), cost,
+                                  disc.reachable_states)
+  Si = apply_policy(disc.to_integer(s0), P, 15)
 
   # convert to continuous
   S = [disc.to_continuous(si) for si in Si]
   Ls = [cost(si) for si in Si]
 
-  show_results(path, S, Ls, animated=0)
+  show_results(path, S, Ls, animated=0.)
 
   return Si
