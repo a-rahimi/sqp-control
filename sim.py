@@ -237,7 +237,6 @@ def test_animate_car():
               alphas=linspace(0.1,1.,len(S))**4)
 
 
-
 def apply_control(s0,u, derivs={}):
   """s(u). apply controls u to state s0.
 
@@ -347,7 +346,7 @@ def deriv_check(L, u, rtol, dh=1e-4):
 
 
 
-def show_results(path, S, costs):
+def show_results(path, S, costs, animated=0):
   P.ion()
   fig1 = P.figure(0); fig1.clear()
   ax = fig1.add_subplot(1,1,1)
@@ -355,22 +354,24 @@ def show_results(path, S, costs):
   ax.axis([-1,1,-1,1])
   draw_path(ax, path)
 
+  if animated:
+    animate_car(ax, S, remove_car=True, sleep=animated)
+  else:
+    animate_car(ax, S, remove_car=False, sleep=0,
+                alphas=linspace(0.1,.5,len(S))**2)
+
+
   fig2 = P.figure(1); fig2.clear()
   ax2 = fig2.add_subplot(2,1,1)
   ax3 = fig2.add_subplot(2,1,2)
 
   # show summary statistics
-  ax2.plot(cost, label='state cost');
+  ax2.plot(costs, label='state cost');
   ax2.set_ylabel('Controller score')
   ax3.plot([speed for dx,alpha,speed,theta in S], label='actual')
   ax3.plot([0, len(S)], [target_speed, target_speed], 'k--', label='target')
   ax3.legend(loc='best')
   ax3.set_ylabel('speed')
-
-  # show the car animation
-  #animate_car(ax, S, remove_car=True, sleep=0.1)
-  animate_car(ax, S, remove_car=False, sleep=0,
-              alphas=linspace(0.1,.5,len(S))**2)
 
   P.draw()
 
@@ -423,7 +424,41 @@ def planner_sqp(T, L, s0, max_dtheta, max_theta, max_ddx, max_iters=30):
     pass
 
 
-def planner_discrete(T, n, cost, reachable_set, s0):
+def planner_discrete_stationary(T, nstates, cost, reachable_set, s0, gamma,
+                                max_iterations=1000):
+  """
+  Find states s_1...s_T that
+
+  minimize  sum_{t=1}^T  gamma^(t-1) cost(s_t)
+  subject to             s_t = reachable_states(s_{t-1})
+
+  Returns a policy function s' = P(s) such that s' is reachable from s
+  and so that the sequence s_t = P(s_{t-1}) starting with t=1 is
+  optimal.
+  """
+  # the immediate cost of each state
+  c0 = array([cost(si) for si in xrange(nstates)])
+  # the state transition policy
+  P = [None]*nstates
+
+  # value function. initialize with the immediate cost
+  v = c0
+
+  for it in xrange(max_iterations):
+    for si in xrange(nstates):
+      vnew[si], P[si] = min( (c0[sj] + gamma * v[sj], sj)
+                             for sj in reachable_set(si) )
+
+    if vnew == v:
+      break
+    v = vnew
+
+  Si = [s0]
+  for t in xrange(1,T):
+    Si.append( P[Si[-1]] )
+  return Si
+
+def planner_discrete(T, nstates, cost, reachable_set, s0):
   """
   Find states s_1...s_T that
 
@@ -436,84 +471,111 @@ def planner_discrete(T, n, cost, reachable_set, s0):
   #  V_t(s_{t-1}) = min_s c(s) + V_{t+1}(s)   s.t. s reachable from s0
   #  I_t(s_{t-1}) = argmin_s c(s) + V_{t+1}(s)   s.t. s reachable from s0
   # Takes O(T d^2)
-  V = inf+zeros((n, T+1))
-  I = zeros((n, T), int)
+  V = inf+zeros((nstates, T+2))
+  I = zeros((nstates, T+1), int)
   # base case: Q_T(s,s_{T-1}) = 0
   V[:,-1] = 0
   for t in xrange(T,0,-1):
-    for si in xrange(states.nstates()):
+    for si in xrange(nstates):
       # the cost of transitioning to each reachable state
-      q = [ cost(sj) + DP[t+1][sj]
-            for sj in reachable_set(si) ]
+      q = [(cost(sj) + V[sj,t+1], sj) for sj in reachable_set(si) ]
       # the best state transision
-      sj = argmin( q )
+      v, sj = min( q )
       # populate the table
-      I[t][si] = sj
-      Q[t][si] = q[sj]
+      I[si,t] = sj
+      V[si,t] = v
 
   # find the minimizers starting at V_1(s_0)
-  return [s0] + [ I[t][S[-1]] for t in xrange(1,T+1) ]
-
+  Si = [s0]
+  for t in xrange(1,T):
+    Si.append( I[Si[-1], t] )
+  return Si
 
 class DiscreteStates:
   """Functions that map between a continuous vector representation of
   the state to an integer."""
-  alpha = None
+  theta = 0
   speed = target_speed
   minx,maxx = -1.,1.
   miny,maxy = -1.,1.
 
-  ntheta = 8
-  nx = int(ceil( (maxx-minx) / speed ))
-  ny = int(ceil( (maxy-miny) / speed ))
+  nalpha = 8
+  nx = 1+int(ceil( (maxx-minx) / speed ))
+  ny = 1+int(ceil( (maxy-miny) / speed ))
 
   def nstates(self):
-    return self.nx * self.ny * self.ntheta
+    return self.nx * self.ny * self.nalpha
 
-  def continuous_state_to_integer(self, s):
+  def to_integer(self, s):
     # parse the state
-    (x,y), _, _,theta = s
+    (x,y), alpha, _, _ = s
 
     # quantize the components independently
-    ix = round((x-self.minx) / self.speed)
-    iy = round((y-self.miny) / self.speed)
-    itheta = round(theta/(2*pi) * self.ntheta)
+    x = clip(x, self.minx, self.maxx)
+    ix = int(round((x-self.minx) / self.speed))
+    y = clip(y, self.miny, self.maxy)
+    iy = int(round((y-self.miny) / self.speed))
+    alpha = alpha % (2*pi)
+    ialpha = int(alpha/(2*pi) * self.nalpha)
 
-    # bijection from (ix,iy,itheta) to [0...nx*ny*ntheta]
-    return (iy* self.nx + ix)* self.ntheta + itheta
+    assert 0<=ix and ix<self.nx, 'bad ix %s from %s'%(ix,x)
+    assert 0<=iy and iy<self.ny, 'bad iy %s from %s'%(iy,y)
+    assert 0<=ialpha and ialpha<self.nalpha, 'bad ialpha %s from %s'%(ialpha,alpha)
 
-  def integer_state_to_continuous(self, si):
-    # bijection from [0...nx*ny*ntheta] to (ix,iy,itheta)
-    r, itheta = divmod(si, self.ntheta)
+    # bijection from (ix,iy,ialpha) to [0...nx*ny*nalpha]
+    return (iy* self.nx + ix)* self.nalpha + ialpha
+
+  def to_continuous(self, si):
+    # bijection from [0...nx*ny*nalpha] to (ix,iy,ialpha)
+    r, ialpha = divmod(si, self.nalpha)
     iy, ix = divmod(r, self.nx)
 
     # map to real
     x = ix * self.speed + self.minx
     y = iy * self.speed + self.miny
-    theta = itheta * 2*pi/self.ntheta
+    alpha = ialpha * 2*pi/self.nalpha
 
-    return ((x,y), self.alpha, self.speed, theta)
+    return ((x,y), alpha, self.speed, self.theta)
+
+  def reachable_states(self, si):
+    "the set of discrete states reachable from the given discrete state"
+    (x,y),alpha,speed,theta = self.to_continuous(si)
+
+    return [
+      self.to_integer(((x + self.speed * cos(alpha+dalpha),
+                        y + self.speed * sin(alpha+dalpha)),
+                      alpha + dalpha,
+                      speed,
+                      theta))
+      for dalpha in (-2*pi/self.nalpha, 0, 2*pi/self.nalpha) ]
+
 
 
 def test_discrete_states():
   disc = DiscreteStates()
 
+  nstates = disc.nstates()
+
   # inspect every state
   for si in xrange(disc.nstates()):
-    s = disc.integer_state_to_continuous(si)
+    s = disc.to_continuous(si)
 
     # ensure it's a valid state
-    (x,y), _, _,theta = s
+    (x,y), alpha, _, _ = s
     assert x>=disc.minx, '%s is out of bounds'%x
     assert x<=disc.maxx, '%s is out of bounds'%x
     assert y>=disc.miny, '%s is out of bounds'%x
     assert y<=disc.maxy, '%s is out of bounds'%x
-    assert theta>=0, '%s is out of bounds'%x
-    assert theta<=2*pi, '%s is out of bounds'%x
+    assert alpha>=0, '%s is out of bounds'%x
+    assert alpha<=2*pi, '%s is out of bounds'%x
 
     # ensure it convert back to the same integer
-    ti = disc.continuous_state_to_integer(s)
+    ti = disc.to_integer(s)
     assert ti == si, 'rediscritized state #%d is #%d. continuous is %s'%(si,ti,s)
+
+    # ensure its reachable states are valid
+    for sj in disc.reachable_states(si):
+      assert 0<=sj and sj<nstates, 'state %d reaches invalid state %d'%(si,sj)
 
   print 'OK'
 
@@ -525,25 +587,17 @@ def test_discrete_planner():
   s0 = ((.5, -.7), pi/2, .04, -pi/4)
 
   def cost(si):
-    "the cost of a discrete state s0."
-    xy,_,_,_ = disc.integer_state_to_continuous(si)
+    "the cost of a discrete state"
+    xy,_,_,_ = disc.to_continuous(si)
+    return path(reshape(xy,(1,2)))['val']**2
 
-    return path(xy)['val']
-
-  def reachable_states(si):
-    "the set of discrete states reachable from discrete state s0"
-    (x,y),alpha,speed,theta = disc.integer_state_to_continuous(s0)
-
-    si = [
-      self.continuous_state_to_integer(x + self.speed * cos(theta+dtheta),
-                                       y + self.speed * sin(theta+dtheta),
-                                       alpha,
-                                       speed,
-                                       theta + dtheta)
-          for dtheta in (-2*pi/self.ntheta, 0, 2*pi/self.ntheta) ]
-
-  Si = planner_discrete(10, disc.nstates(), cost, reachable_states,
-                        disc.continuous_state_to_integer(s0))
+  Si = planner_discrete(10, disc.nstates(), cost, disc.reachable_states,
+                        disc.to_integer(s0))
 
   # convert to continuous
-  S = [si_to_s(si) for si in Si]
+  S = [disc.to_continuous(si) for si in Si]
+  Ls = [cost(si) for si in Si]
+
+  show_results(path, S, Ls, animated=0)
+
+  return Si
