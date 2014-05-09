@@ -24,14 +24,6 @@ def planner_sqp(T, L, s0, max_dtheta, max_theta, max_ddx, max_iters=30):
     pass
 
 
-def deriv_check(L, u, rtol, dh=1e-4):
-  du = dh * random.randn(len(u))
-
-  numeric = L(u+du)[0] - L(u)[0]
-  analytic = dot(L(u)[1], du)
-
-  assert abs(analytic-numeric)/linalg.norm(du) < rtol, \
-    'num %s ana %s'%(numeric, analytic)
 
 
 def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
@@ -110,7 +102,7 @@ def test_gradient_controller():
       return one_step_cost(u, path, s0, u0, target_speed, lambda_speed)
 
     if True:
-      deriv_check(L, u0, 1e-2)
+      sim.deriv_check(L, u0, 1e-2)
 
     u0 = greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx)
     s0 = sim.apply_control(s0, u0)['val']

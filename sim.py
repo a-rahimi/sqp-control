@@ -256,8 +256,10 @@ def apply_control(s0,u, derivs={}):
   alpha = alpha0 + speed/car_length * tan(theta)
   alpha = alpha % (2*pi)
 
-  x = x0 + cos(alpha) * speed
-  y = y0 + sin(alpha) * speed
+  ca,sa = cos(alpha), sin(alpha)
+
+  x = x0 + ca * speed
+  y = y0 + sa * speed
 
   # aggregate into a state object
 
@@ -267,7 +269,7 @@ def apply_control(s0,u, derivs={}):
     dspeeddu = (1,0)
     dthetadu = (0,1)
     dalphadu = (1/car_length*tan(theta), speed/car_length * (1+tan(theta)**2))
-    dxdu = speed*outer((-sin(alpha),cos(alpha)), dalphadu) + outer((cos(alpha),sin(alpha)), (1,0))
+    dxdu = speed*outer((-sa,ca), dalphadu) + outer((ca,sa), (1,0))
     res['du'] = (dxdu[0], dxdu[1], dalphadu, dspeeddu, dthetadu)
 
   if 'ds' in derivs:
@@ -275,13 +277,43 @@ def apply_control(s0,u, derivs={}):
     dspeedds = (0,0,0,1,0)
     dthetads = (0,0,0,0,1)
     dalphads = (0,0,1) + dalphadu
-    dxds = (1,0,-sin(alpha)*speed,cos(alpha),-sin(alpha)*speed*dalphadu[1])
-    dyds = (0,1,cos(alpha)*speed,sin(alpha),sin(alpha)*speed*dalphadu[1])
+    dxds = (1,0,-sa*speed,ca-sa*speed*dalphadu[0],-sa*speed*dalphadu[1])
+    dyds = (0,1,ca*speed,sa+ca*speed*dalphadu[0],ca*speed*dalphadu[1])
     res['ds'] = (dxds,dyds,dalphads,dspeedds,dthetads)
 
   return res
 
 
+def deriv_check(f, x, rtol, dh=1e-4):
+  dx = dh * random.randn(len(x))
+
+  numeric = f(x+dx)[0] - f(x)[0]
+  analytic = dot(f(x)[1], dx)
+
+  assert abs(analytic-numeric)/linalg.norm(dx) < rtol, \
+    'num %s ana %s'%(numeric, analytic)
+
+
+def test_apply_control():
+  s0 = array((.5, -.7, pi/2, .04, -pi/4))
+  u0 = 0.1, 0.01
+
+  # check the derivative of the dynamics wrt u and s for each component of s
+  for i in xrange(len(s0)):
+    # check derivatives wrt du
+    def f(u):
+      res = apply_control(s0,u,{'du'})
+      return res['val'][i], res['du'][i]
+    deriv_check(f,u0,1e-3,dh=1e-6)
+
+    # check derivatives wrt ds
+    def f(s):
+      res = apply_control(s,u0,{'du','ds'})
+      return res['val'][i], res['ds'][i]
+    deriv_check(f,s0,1e-3,dh=1e-6)
+
+
+  print 'OK'
 
 
 def show_results(path, S, costs, animated=0, target_speed=.1):
