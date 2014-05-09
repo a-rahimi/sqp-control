@@ -102,7 +102,7 @@ class CarDrawing():
 
 def draw_car(ax, s, **kwargs):
   # parse the state
-  (x,y),alpha,speed,theta = s
+  x,y,alpha,speed,theta = s
 
   # rotation matrix for the car relative to the current universe
   dx,dy = cos(alpha),sin(alpha)
@@ -161,12 +161,12 @@ def test_draw_car():
   P.axis('scaled')
   P.axis([-1,1,-1,1])
 
-  X = [ ((-.1,-.5), pi/3, 0, -pi/6),
-        ((-.1,-.5), pi/3, 0, 0.),
-        ((-.1,-.5), pi/3, 0, pi/6),
-        ((-.1,-.5), 0, 0, -pi/6),
-        ((-.1,-.5), 0, 0, 0),
-        ((-.1,-.5), 0, 0, pi/6),
+  X = [ (-.1,-.5, pi/3, 0, -pi/6),
+        (-.1,-.5, pi/3, 0, 0.),
+        (-.1,-.5, pi/3, 0, pi/6),
+        (-.1,-.5, 0, 0, -pi/6),
+        (-.1,-.5, 0, 0, 0),
+        (-.1,-.5, 0, 0, pi/6),
         ]
   hs = []
 
@@ -195,7 +195,7 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None):
 
   for s,alpha in itertools.izip(S,alphas):
     # parse the state
-    (x,y),_,_,_  = s
+    x,y,_,_,_  = s
     # append to the trail
     drawing.trail.set_xdata(hstack((drawing.trail.get_xdata(), x)))
     drawing.trail.set_ydata(hstack((drawing.trail.get_ydata(), y)))
@@ -219,8 +219,7 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None):
 def test_animate_car():
   "run the car with constant control input"
   # initial state
-  x,y,alpha,speed,theta = (.6, .2, pi*.3, .04, -pi/12)
-  s0 = (array((x,y)), alpha, speed, theta)
+  s0 = (.0, .1, pi*.3, .04, -pi/12)
 
   # apply the controls
   S = [s0]
@@ -241,8 +240,7 @@ def apply_control(s0,u, derivs={}):
     s=(x,alpha,speed,theta)
     u=(ddx,dtheta)
 
-  and eta the function that normalizes its vector argument to unit
-  length, s(u) is
+  s(u) is
 
     speed(u) = speed0 + ddx
     theta(u) = theta0 + dtheta
@@ -250,7 +248,7 @@ def apply_control(s0,u, derivs={}):
     x(u)     = x0 + v(alpha(u)) * speed
   """
   # parse arguments
-  x0,alpha0,speed0,theta0 = s0
+  x0,y0,alpha0,speed0,theta0 = s0
   ddx,dtheta = u
 
   speed = speed0 + ddx
@@ -258,18 +256,28 @@ def apply_control(s0,u, derivs={}):
   alpha = alpha0 + speed/car_length * tan(theta)
   alpha = alpha % (2*pi)
 
-  x = x0 + array((cos(alpha), sin(alpha))) * speed
+  x = x0 + cos(alpha) * speed
+  y = y0 + sin(alpha) * speed
 
   # aggregate into a state object
 
-  res = { 'val': (x,alpha,speed,theta) }
+  res = { 'val': (x,y,alpha,speed,theta) }
 
   if 'du' in derivs:
     dspeeddu = (1,0)
     dthetadu = (0,1)
     dalphadu = (1/car_length*tan(theta), speed/car_length * (1+tan(theta)**2))
     dxdu = speed*outer((-sin(alpha),cos(alpha)), dalphadu) + outer((cos(alpha),sin(alpha)), (1,0))
-    res['du'] = (dxdu, dalphadu, dspeeddu, dthetadu)
+    res['du'] = (dxdu[0], dxdu[1], dalphadu, dspeeddu, dthetadu)
+
+  if 'ds' in derivs:
+    assert 'du' in derivs, 'Need du to compute ds'
+    dspeedds = (0,0,0,1,0)
+    dthetads = (0,0,0,0,1)
+    dalphads = (0,0,1) + dalphadu
+    dxds = (1,0,-sin(alpha)*speed,cos(alpha),-sin(alpha)*speed*dalphadu[1])
+    dyds = (0,1,cos(alpha)*speed,sin(alpha),sin(alpha)*speed*dalphadu[1])
+    res['ds'] = (dxds,dyds,dalphads,dspeedds,dthetads)
 
   return res
 
@@ -298,7 +306,7 @@ def show_results(path, S, costs, animated=0, target_speed=.1):
   # show summary statistics
   ax2.plot(costs, label='state cost');
   ax2.set_ylabel('Controller score')
-  ax3.plot([speed for dx,alpha,speed,theta in S], label='actual')
+  ax3.plot([speed for _,_,_,speed,_ in S], label='actual')
   ax3.plot([0, len(S)], [target_speed, target_speed], 'k--', label='target')
   ax3.legend(loc='best')
   ax3.set_ylabel('speed')

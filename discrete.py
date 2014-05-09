@@ -100,7 +100,7 @@ class DiscreteStates:
 
   def to_integer(self, s):
     # parse the state
-    (x,y), alpha, _, _ = s
+    x, y, alpha, _, _ = s
 
     # quantize the components independently
     x = clip(x, self.minx, self.maxx)
@@ -128,18 +128,18 @@ class DiscreteStates:
     y = iy * self.speed + self.miny
     alpha = ialpha * 2*pi/self.nalpha
 
-    return ((x,y), alpha, self.speed, self.theta)
+    return (x, y, alpha, self.speed, self.theta)
 
   def reachable_states(self, si):
     "the set of discrete states reachable from the given discrete state"
-    (x,y),alpha,speed,theta = self.to_continuous(si)
+    x,y,alpha,speed,theta = self.to_continuous(si)
 
     return [
-      self.to_integer(((x + self.speed * cos(alpha+dalpha),
-                        y + self.speed * sin(alpha+dalpha)),
-                      alpha + dalpha,
-                      speed,
-                      theta))
+      self.to_integer((x + self.speed * cos(alpha+dalpha),
+                       y + self.speed * sin(alpha+dalpha),
+                       alpha + dalpha,
+                       speed,
+                       theta))
       for dalpha in (-2*pi/self.nalpha, 0, 2*pi/self.nalpha) ]
 
 
@@ -154,7 +154,7 @@ def test_discrete_states():
     s = disc.to_continuous(si)
 
     # ensure it's a valid state
-    (x,y), alpha, _, _ = s
+    x, y, alpha, _, _ = s
     assert x>=disc.minx, '%s is out of bounds'%x
     assert x<=disc.maxx, '%s is out of bounds'%x
     assert y>=disc.miny, '%s is out of bounds'%x
@@ -178,12 +178,12 @@ def test_discrete_planner():
   disc = DiscreteStates()
 
   path = sim.genpath()
-  s0 = ((.5, -.7), pi/2, .04, -pi/4)
+  s0 = (.5, -.7, pi/2, .04, -pi/4)
 
   def cost(si):
     "the cost of a discrete state"
-    xy,_,_,_ = disc.to_continuous(si)
-    return path(reshape(xy,(1,2)))['val']**2
+    x,y,_,_,_ = disc.to_continuous(si)
+    return path(reshape((x,y),(1,2)))['val']**2
 
   #Si = planner_discrete(10, disc.nstates(), cost, disc.reachable_states,
   #                      disc.to_integer(s0))
