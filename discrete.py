@@ -174,27 +174,34 @@ def test_discrete_states():
   print 'OK'
 
 
-def test_discrete_planner():
-  disc = DiscreteStates()
 
-  path = sim.genpath()
-  s0 = (.5, -.7, pi/2, .04, -pi/4)
-
-  def cost(si):
-    "the cost of a discrete state"
-    x,y,_,_,_ = disc.to_continuous(si)
-    return path(reshape((x,y),(1,2)))['val']**2
-
-  #Si = planner_discrete(10, disc.nstates(), cost, disc.reachable_states,
-  #                      disc.to_integer(s0))
-  P = planner_discrete_stationary(0.8, disc.nstates(), cost,
+def continuous_plan(T, cost, gamma, s0, disc=DiscreteStates()):
+  P = planner_discrete_stationary(gamma, disc.nstates(),
+                                  lambda si: cost(disc.to_continuous(si)),
                                   disc.reachable_states)
   Si = apply_policy(disc.to_integer(s0), P, 15)
 
-  # convert to continuous
+  # convert states to continuous
   S = [disc.to_continuous(si) for si in Si]
-  Ls = [cost(si) for si in Si]
+  # the cost of each state
+  Ls = [cost(s) for s in S]
 
+  return S,Ls,Si
+
+
+def test_discrete_planner():
+  """a planner that plots a path with a fixed speed no adherence to
+  the steering limits.
+  """
+
+  path = sim.genpath()
+
+  def cost(s):
+    "the cost is just the deviation form the path"
+    x,y,_,_,_ = s
+    return path(reshape((x,y),(1,2)))['val']**2
+
+  s0 = (.5, -.7, pi/2, .04, -pi/4)
+  S,Ls,_ = continuous_plan(15, cost, 0.8, s0)
   sim.show_results(path, S, Ls, animated=0.5)
-
   return Si

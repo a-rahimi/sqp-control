@@ -1,29 +1,11 @@
+import pdb
 from numpy import *
 import scipy.optimize as O
+import pylab as P
+import cvxpy as CX
+
 import sim
-
-lambda_speed = 10.
-
-def planner_sqp(T, L, s0, max_dtheta, max_theta, max_ddx, max_iters=30):
-  """
-  Find control signals u_1...u_T, u_t=(ddx_t,dtheta_t) and the ensuing
-  states s_1...s_T that
-
-  minimize  sum_{t=1}^T  L(s_t)
-  subject to        s_t = f(u_t, s_{t-1})
-                    | dtheta_t | < max_dtheta
-                    | ddx_t | < max_ddx
-
-  Solves this as a Sequential Quadratic program by approximating L by
-  a quadratic, and f by an affine transform.
-  """
-  # the initial sequence of states
-  S = planner_discrete(T, L, u0, s0, max_dtheta, max_theta, max_ddx)
-
-  for it in xrange(max_iters):
-    pass
-
-
+import discrete
 
 
 def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
@@ -83,17 +65,18 @@ def greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx):
   return res['x']
 
 
-def test_gradient_controller():
+def test_greedy_controller():
   "generate and draw a random path"
   path = sim.genpath()
 
-  target_speed = .1
   s0 = (.5, -.7, pi/2, .04, -pi/4)
   x,y,alpha,speed,theta = s0
   u0 = 0.1, 0.01
   max_dtheta = pi/20
   max_theta = pi/4
   max_ddx = 0.01
+  target_speed = .1
+  lambda_speed = 10.
 
   S = [s0]
   Ls = []
@@ -109,7 +92,10 @@ def test_gradient_controller():
     S.append( s0 )
     Ls.append( L(u0)[0] )
 
-  sim.show_results(path, S, Ls)
+  sim.show_results(path, S, Ls, animated=0.1)
+
+
+
 
 
 def min_quad_with_linear_eq(H, a, K, u):
@@ -203,3 +189,208 @@ def test_min_quad_with_linear_eq():
   assert all(abs(x[d:]-x_) < 1e-10), 'Incorrection solution'
 
   print 'OK'
+
+
+def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
+                max_iters=30, show_results=None):
+  """
+  Find control signals u_1...u_T, u_t=(ddx_t,dtheta_t) and the ensuing
+  states s_1...s_T that
+
+  minimize  sum_{t=1}^T  cost(s_t)
+  subject to        s_t = f(u_t, s_{t-1})
+                    | dtheta_t | < max_dtheta
+                    | ddx_t | < max_ddx
+
+  Solves this as a Sequential Quadratic program by approximating L by
+  a quadratic, and f by an affine transform.
+  """
+  # the initial sequence of states
+  Sv,_,_ = discrete.continous_plan(T, 0.8, s0, L)
+  # recover controls from the state sequence
+  Uv = XXX
+
+
+  for it in xrange(max_iters):
+    # the instantaneous costs for this iteration
+    L = [inf] * T
+    # objective and constraints of the quadratic problem
+    objective = 0
+    constraints = []
+    S = [None] * T
+    U = [None] * T
+    S[0] = s0
+
+    for t in xrange(1,T):
+      # cost(s_t) and its derivatives
+      c = cost(Sv[t], {'ds','ds2'})
+      # f(u_t, s_{t-1}) and its derivatives
+      f = dynamics(Uv[t], Sv[t-1], {'du','ds'})
+
+      L[t] = c['val']
+
+      S[t] = CX.Variable(5, name='s_%d'%t)
+      U[t] = CX.Variable(2, name='s_%d'%t)
+
+      objective += c['val'] + sum(c['ds']*S[t]) + 0.5*CX.quad_form(S[t],c['ds2'])
+      constraints += [S[t] == f['val'] + sum(f['ds']*S[t-1]) + sum(f['du']*U[t])]
+
+    # solve for S and U
+    p = CX.Problem(CX.Minimize(objective), constriants)
+    r = p.solve()
+
+    # check convergence
+    if all(abs(Unew-U) < 1e-5):
+      break
+    U = Unew
+
+    if show_results:
+      show_results(S, L, it)
+
+
+def test_planner_sqp():
+  path = sim.genpath()
+
+  s0 = (.5, -.7, pi/2, .04, -pi/4)
+  x,y,alpha,speed,theta = s0
+  u0 = 0.1, 0.01
+  max_dtheta = pi/20
+  max_theta = pi/4
+  max_ddx = 0.01
+  target_speed = .1
+  lambda_speed = 10.
+
+  def cost(s, derivs=set([])):
+    """p(x)**2 + lambda (speed - target_speed)^2 and its derivatives wrt s"""
+
+    x,y,_,speed,_ = s
+
+    p = path(reshape((x,y),(1,2)),
+             derivs=set([{'ds':'dx', 'ds2':'dx2'}[d] for d in derivs]) )
+
+    res = {'val':  p['val']**2 + lambda_speed * (speed-target_speed)**2 }
+
+    if 'ds' in derivs:
+      ds = zeros(5)
+      ds[[0,1,3]] = 2*p['val']*p['dx'] + 2*lambda_speed * (speed-target_speed)
+      res['ds'] = ds
+    if 'ds2' in derives:
+      ds2 = zeros((5,5))
+      ds2[ix_([0,1,3],[0,1,3])] = 2*p['val']*p['dx2'] + 2*outer(p['dx'],p['dx'])
+      res['ds2'] = ds2
+    return res
+
+  def show_results(S, L, it):
+    sim.show_results(path, S, L, animated=0)
+    P.figure(0).title('iteration %d'%it)
+    print 'iteration', it
+
+  S = planner_sqp(15, cost, apply_control, s0, max_dtheta, max_theta, max_ddx,
+                max_iters=30, show_results=show_results)
+
+
+def transition_to_action(s0,s1, dynamics, max_dtheta, max_ddx, max_iter=30,
+                         max_line_searches=10):
+  """recovers a control signal u that can cause a transition from s0 to s1.
+
+  specifically, minimize || f(s0,u) - s1 ||^2 as a Sequential
+  Quadratic Program.
+  """
+  # the current step size along the search direction recovered by the QP
+  step = 1.
+
+  # initial guess
+  s0 = array(s0)
+  s1 = array(s1)
+  u0 = array((0,0))
+
+  def cost(u):
+    "|| f(s0,u) - s1 ||^2"
+    return sum((array(dynamics(s0,u)['val']) - s1)**2)
+
+  # the value of the initial guess
+  best_cost = cost(u0)
+
+  for it in xrange(max_iter):
+    f = dynamics(s0, u0, derivs={'du'})
+
+    # linearize || f(s0,u) - s1 ||^2 about u0 and solve as a QP
+    u = CX.Variable(len(u0), name='u')
+    objective = CX.sum(CX.square(array(f['val']) + vstack(f['du'])*(u-u0) - s1))
+    p = CX.Problem(CX.Minimize(objective),
+                      [CX.abs(u[0]) <= max_ddx,
+                       CX.abs(u[1]) <= max_dtheta])
+    r = p.solve()
+    unew = array(u.value.flat)
+
+    # line search along unew-u0 from u0
+    line_search_success = False
+    for line_searches in xrange(max_line_searches):
+      new_cost = cost(u0 + step*(unew-u0))
+      if new_cost < best_cost:
+        # accept the step
+        best_cost = new_cost
+        u0 = u0 + step*(unew-u0)
+        # grow the step for the next iteration
+        step *= 1.2
+        line_search_success = True
+      else:
+        # shrink the step size and try again
+        step *= 0.5
+    if not line_search_success:
+      # convergence is when line search fails.
+      return u0
+
+  print 'Warning: failed to converge'
+  return u0
+
+
+def test_transition_to_action():
+  s0 = (.5, -.7, pi/2, .04, -pi/4)
+  max_dtheta = pi/20
+  max_ddx = 0.01
+
+  for it in xrange(5):
+    # apply a random control
+    u = array(((random.rand()-0.5)*max_ddx, (random.rand()-0.5)*max_dtheta))
+    s1 = sim.apply_control(s0,u)['val']
+
+    # recover it
+    u_ = transition_to_action(s0, s1, sim.apply_control, max_dtheta, max_ddx)
+
+    assert all(abs(u_-u)/abs(u)<1e-2), 'Recovered control %s is not %s'%(u_,u)
+
+  print 'OK'
+
+
+def test_transition_to_action1():
+  # a random problem
+  path = sim.genpath()
+  s0 = (.5, -.7, pi/2, .04, -pi/4)
+
+def test_transition_to_action1():
+  # a random problem
+  path = sim.genpath()
+  s0 = (.5, -.7, pi/2, .04, -pi/4)
+  max_dtheta = pi/20
+  max_ddx = 0.01
+
+  # solve it as discrete
+  def cost(s):
+    return path(reshape(s[:2],(1,2)))['val']**2
+  S,Ls,_ = discrete.continuous_plan(15, cost, 0.8, s0)
+
+  # recover control actions and apply to current state
+  Scont = [s0]
+  for s0,s1 in zip(S,S[1:]):
+    u = transition_to_action(s0, s1, sim.apply_control, max_dtheta, max_ddx)
+    Scont.append( sim.apply_control(Scont[-1], u)['val'] )
+
+  # show discrete trajectory
+  sim.show_results(path, S, Ls, animated=0)
+  # show continuous trajectory
+  sim.animate_car(P.figure(0).add_subplot(1,1,1), Scont,
+                  remove_car=False, sleep=0.,
+                  alphas=linspace(0.1,.5,len(S))**2,
+                  color='r')
+  P.draw()

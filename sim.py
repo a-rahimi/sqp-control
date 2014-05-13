@@ -41,7 +41,6 @@ def genpath():
 
   path.params = {'u0': u0, 'u1': u1,
                  'w0': w0, 'w1': w1}
-  print path.params
   return path
 
 
@@ -179,7 +178,8 @@ def test_draw_car():
     P.waitforbuttonpress()
 
 
-def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None):
+def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None,
+                **kwargs):
   """animate the car along the given state sequence. returns an object
   that represent's the car's shape for subsequent animation.  by default,
   produces an animation. but if remove_car=False, draws a final frame with
@@ -187,7 +187,7 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None):
   """
   # initialize the drawing if needed
   if not drawing:
-    drawing = CarDrawing()
+    drawing = CarDrawing(**kwargs)
     ax.add_artist(drawing.trail)
 
   if alphas is None:
@@ -205,7 +205,7 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None):
       drawing.remove_car()
 
     # draw the car
-    drawing.h = draw_car(ax, s)
+    drawing.h = draw_car(ax, s, **kwargs)
     for h in drawing.h:
       h.set(alpha=alpha)
 
@@ -311,7 +311,6 @@ def test_apply_control():
       res = apply_control(s,u0,{'du','ds'})
       return res['val'][i], res['ds'][i]
     deriv_check(f,s0,1e-3,dh=1e-6)
-
 
   print 'OK'
 
