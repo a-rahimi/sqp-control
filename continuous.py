@@ -8,7 +8,7 @@ import sim
 import discrete
 
 
-def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
+def one_step_cost(u, path, s0, target_speed, lambda_speed):
   """
   Evaluate the scalar function
 
@@ -19,7 +19,6 @@ def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
 
   # parse arguments
   x0,y0,alpha0,speed,theta0 = s0
-  ddx0,dtheta0 = u0
   ddx,dtheta = u
 
   # parse s(u)
@@ -37,7 +36,7 @@ def one_step_cost(u, path, s0, u0, target_speed, lambda_speed):
   return L,dL.ravel()
 
 
-def greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx):
+def greedy_controller(L, s0, max_dtheta, max_theta, max_ddx):
   """A greedy controller.
 
   Minimizes a function L. L takes as input the current state s0 and a
@@ -57,11 +56,11 @@ def greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx):
   # which we combine into
   #   max(-max_dtheta, -max_theta-theta0) < theta < min(max_dtheta,max_theta-theta0)
   _,_,_,_,theta0 = s0
-  bounds=(((-max_ddx, max_ddx),
+  bounds=((-max_ddx, max_ddx),
           (max(-max_dtheta, -max_theta-theta0),
-           min(max_dtheta, max_theta-theta0))))
+           min(max_dtheta, max_theta-theta0)))
 
-  res = O.minimize(L, array(u0), method='L-BFGS-B', jac=True, bounds=bounds)
+  res = O.minimize(L, zeros(2), method='L-BFGS-B', jac=True, bounds=bounds)
   return res['x']
 
 
@@ -69,28 +68,29 @@ def test_greedy_controller():
   "generate and draw a random path"
   path = sim.genpath()
 
-  s0 = (.5, -.7, pi/2, .04, -pi/4)
-  x,y,alpha,speed,theta = s0
-  u0 = 0.1, 0.01
+  s = (.5, -.7, pi/2, .04, -pi/4)
   max_dtheta = pi/20
   max_theta = pi/4
   max_ddx = 0.01
   target_speed = .1
   lambda_speed = 10.
 
-  S = [s0]
+  S = []
   Ls = []
   for i in xrange(80):
+    S.append( s )
+
     def L(u):
-      return one_step_cost(u, path, s0, u0, target_speed, lambda_speed)
+      return one_step_cost(u, path, S[-1], target_speed, lambda_speed)
+
+    u = greedy_controller(L, s, max_dtheta, max_theta, max_ddx)
+    Ls.append( L(u)[0] )
+
+    s = sim.apply_control(s, u)['val']
 
     if True:
-      sim.deriv_check(L, u0, 1e-2)
+      sim.deriv_check(L, u, 1e-2)
 
-    u0 = greedy_controller(L, u0, s0, max_dtheta, max_theta, max_ddx)
-    s0 = sim.apply_control(s0, u0)['val']
-    S.append( s0 )
-    Ls.append( L(u0)[0] )
 
   sim.show_results(path, S, Ls, animated=0.1)
 
@@ -306,7 +306,7 @@ def transition_to_action(s0,s1, dynamics, max_dtheta, max_ddx, max_iter=30,
 
   def cost(u):
     "|| f(s0,u) - s1 ||^2"
-    return sum((array(dynamics(s0,u)['val']) - s1)**2)
+    return sum((dynamics(s0,u)['val'] - s1)**2)
 
   # the value of the initial guess
   best_cost = cost(u0)
@@ -363,10 +363,6 @@ def test_transition_to_action():
   print 'OK'
 
 
-def test_transition_to_action1():
-  # a random problem
-  path = sim.genpath()
-  s0 = (.5, -.7, pi/2, .04, -pi/4)
 
 def test_transition_to_action1():
   # a random problem
@@ -384,6 +380,8 @@ def test_transition_to_action1():
   Scont = [s0]
   for s0,s1 in zip(S,S[1:]):
     u = transition_to_action(s0, s1, sim.apply_control, max_dtheta, max_ddx)
+    s1hat = sim.apply_control(Scont[-1], u)['val']
+    print s1hat - s1
     Scont.append( sim.apply_control(Scont[-1], u)['val'] )
 
   # show discrete trajectory

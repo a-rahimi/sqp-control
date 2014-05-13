@@ -128,7 +128,7 @@ class DiscreteStates:
     y = iy * self.speed + self.miny
     alpha = ialpha * 2*pi/self.nalpha
 
-    return (x, y, alpha, self.speed, self.theta)
+    return array((x, y, alpha, self.speed, self.theta))
 
   def reachable_states(self, si):
     "the set of discrete states reachable from the given discrete state"
