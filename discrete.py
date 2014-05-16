@@ -1,5 +1,7 @@
+import pdb
 from numpy import *
 import sim
+#from numba import jit
 
 
 def planner_discrete(T, nstates, cost, reachable_set, s0):
@@ -36,8 +38,7 @@ def planner_discrete(T, nstates, cost, reachable_set, s0):
   return Si
 
 
-def planner_discrete_stationary(gamma, nstates, cost, reachable_set,
-                                max_iterations=1000):
+def planner_stationary(gamma, nstates, cost, reachable_set, max_iterations=10):
   """
   Find states s_1...s_T that
 
@@ -78,107 +79,188 @@ def apply_policy(s0,P,T):
     Si.append( P[Si[-1]] )
   return Si
 
+#@jit(nopython=True)
+def quantize(v, minv, maxv, nv):
+  v = clip(v, minv, maxv)
+  iv = int(round((v-minv) / (maxv-minv) * (nv-1)))
+  assert 0<=iv and iv<nv, 'bad quantization'
+  return iv
+
+#@jit(nopython=True)
+def unquantize(iv, minv, maxv, nv):
+  assert 0<=iv and iv<nv, 'invalid discrete coordinate'
+  v = float32(iv) * (maxv-minv) / (nv-1) + minv
+  assert minv<=v and v<=maxv, 'bad unquantization'
+  return v
+
+#@jit(nopython=True)
+def quantize_angle(v,nv):
+  """a quantization that avoids the wraparound. iv=nv-1 corresponds
+  the quantum that precedes 2 pi, instead of 2*pi."""
+  return quantize(v%(2*pi),0,2*pi*(1-1./nv),nv)
+
+#@jit(nopython=True)
+def unquantize_angle(iv,nv):
+  return unquantize(iv,0,2*pi*(1-1./nv),nv)
+
 
 class DiscreteStates:
   """Functions that map between a continuous vector representation of
   the state to an integer."""
 
-  def __init__(self, theta=0, speed=.1, nalpha=8,
-               minx=-1, maxx=1., miny=-1 ,maxy=1.):
-    self.theta = theta
-    self.speed = speed
-    self.nalpha = 8
+  def __init__(self, nalpha=8, nspeed=10, minspeed=0, maxspeed=.1, ntheta=11,
+               nx=29, minx=-1, maxx=1., miny=-1, maxy=1.,
+               ndtheta=3, max_theta=pi/4, max_dtheta=pi/20, nddx=3, max_ddx=0.01):
+    self.nalpha = nalpha
+    self.minspeed = minspeed
+    self.maxspeed = maxspeed
+    self.nspeed = nspeed
+    self.max_theta = max_theta
+    self.ntheta = ntheta
     self.minx= minx
     self.maxx = maxx
     self.miny = miny
     self.maxy = maxy
-    self.nx = 1+int(ceil( (maxx-minx) / speed ))
-    self.ny = 1+int(ceil( (maxy-miny) / speed ))
+    self.nx = nx
+    self.ny = nx
+    self.ndtheta = ndtheta
+    self.max_dtheta = max_dtheta
+    self.nddx = nddx
+    self.max_ddx = max_ddx
+
+    # a cache of reachable states
+    self.reachable = [None]*self.nstates()
 
   def nstates(self):
-    return self.nx * self.ny * self.nalpha
+    return self.nx * self.ny * self.nalpha * self.nspeed * self.ntheta
 
+
+  #@jit
   def to_integer(self, s):
     # parse the state
-    x, y, alpha, _, _ = s
+    x, y, alpha, speed, theta = s
 
-    # quantize the components independently
-    x = clip(x, self.minx, self.maxx)
-    ix = int(round((x-self.minx) / self.speed))
-    y = clip(y, self.miny, self.maxy)
-    iy = int(round((y-self.miny) / self.speed))
-    alpha = alpha % (2*pi)
-    ialpha = int(alpha/(2*pi) * self.nalpha)
+    # quantize each component
+    ix = quantize(x, self.minx, self.maxx, self.nx)
+    iy = quantize(y, self.miny, self.maxy, self.ny)
+    ialpha = quantize_angle(alpha, self.nalpha)
+    ispeed = quantize(speed, self.minspeed, self.maxspeed, self.nspeed)
+    itheta = quantize(theta, -self.max_theta, self.max_theta, self.ntheta)
 
-    assert 0<=ix and ix<self.nx, 'bad ix %s from %s'%(ix,x)
-    assert 0<=iy and iy<self.ny, 'bad iy %s from %s'%(iy,y)
-    assert 0<=ialpha and ialpha<self.nalpha, \
-      'bad ialpha %s from %s'%(ialpha,alpha)
+    return self.qcoords_to_integer(ix,iy,ialpha,ispeed,itheta)
 
-    # bijection from (ix,iy,ialpha) to [0...nx*ny*nalpha]
-    return (iy* self.nx + ix)* self.nalpha + ialpha
+  #@jit
+  def qcoords_to_integer(self, ix, iy, ialpha, ispeed, itheta):
+    "bijection from (ix,iy,ialpha,ispeed,itheta) to [0...nstates]"
+    return (((iy*self.nx + ix)*self.nalpha + ialpha) * self.nspeed + ispeed) * self.ntheta + itheta
 
-  def to_continuous(self, si):
-    # bijection from [0...nx*ny*nalpha] to (ix,iy,ialpha)
-    r, ialpha = divmod(si, self.nalpha)
+  #@jit
+  def integer_to_qcoords(self, si):
+    "bijection from [0...nstates] to (ix,iy,ialpha,ispeed,itheta)"
+    r, itheta = divmod(si, self.ntheta)
+    r, ispeed = divmod(r, self.nspeed)
+    r, ialpha = divmod(r, self.nalpha)
     iy, ix = divmod(r, self.nx)
+    return ix,iy,ialpha,ispeed,itheta
 
-    # map to real
-    x = ix * self.speed + self.minx
-    y = iy * self.speed + self.miny
-    alpha = ialpha * 2*pi/self.nalpha
+  #@jit
+  def to_continuous(self, si):
+    ix,iy,ialpha,ispeed,itheta = self.integer_to_qcoords(si)
 
-    return array((x, y, alpha, self.speed, self.theta))
+    # map integer indices to real numbers
+    x = unquantize(ix, self.minx, self.maxx, self.nx)
+    y = unquantize(iy, self.miny, self.maxy, self.ny)
+    alpha = unquantize_angle(ialpha, self.nalpha)
+    speed = unquantize(ispeed, self.minspeed, self.maxspeed, self.nspeed)
+    theta = unquantize(itheta, -self.max_theta, self.max_theta, self.ntheta)
 
+    return array((x, y, alpha, speed, theta))
+
+  #@jit
   def reachable_states(self, si):
     "the set of discrete states reachable from the given discrete state"
-    x,y,alpha,speed,theta = self.to_continuous(si)
+    # return a cached result if available
+    if self.reachable[si] is not None:
+      return self.reachable[si]
 
-    return [
-      self.to_integer((x + self.speed * cos(alpha+dalpha),
-                       y + self.speed * sin(alpha+dalpha),
-                       alpha + dalpha,
-                       speed,
-                       theta))
-      for dalpha in (-2*pi/self.nalpha, 0, 2*pi/self.nalpha) ]
+    s = self.to_continuous(si)
+    res = set([
+      self.to_integer( sim.apply_control(s, (ddx,dtheta))['val'] )
+      for ddx in linspace(-self.max_ddx, self.max_ddx, self.nddx)
+      for dtheta in linspace(-self.max_dtheta, self.max_dtheta, self.ndtheta)
+      ])
+
+    # cache before returning
+    self.reachable[si] = res
+    return res
+
+
+
+# create a module-global instance of this class. don't recreate on
+# reload to speed up reload
+if 'disc' not in globals():
+  disc = DiscreteStates()
 
 
 
 def test_discrete_states():
-  disc = DiscreteStates()
-
   nstates = disc.nstates()
+  print 'There are %d states'%nstates
 
   # inspect every state
   for si in xrange(disc.nstates()):
     s = disc.to_continuous(si)
-
-    # ensure it's a valid state
-    x, y, alpha, _, _ = s
-    assert x>=disc.minx, '%s is out of bounds'%x
-    assert x<=disc.maxx, '%s is out of bounds'%x
-    assert y>=disc.miny, '%s is out of bounds'%x
-    assert y<=disc.maxy, '%s is out of bounds'%x
-    assert alpha>=0, '%s is out of bounds'%x
-    assert alpha<=2*pi, '%s is out of bounds'%x
 
     # ensure it convert back to the same integer
     ti = disc.to_integer(s)
     assert ti == si, \
       'rediscritized state #%d is #%d. continuous is %s'%(si,ti,s)
 
+    R = disc.reachable_states(si)
+
     # ensure its reachable states are valid
-    for sj in disc.reachable_states(si):
+    for sj in R:
       assert 0<=sj and sj<nstates, 'state %d reaches invalid state %d'%(si,sj)
+
+    # the quantized representation of each component
+    ix,iy,ialpha,ispeed,itheta = disc.integer_to_qcoords(si)
+
+    # It should be possible to turn the wheel at every state
+    s_left = sim.apply_control(s, (0.,disc.max_dtheta))['val']
+    si_left = disc.to_integer(s_left)
+    if itheta<disc.ntheta-1:
+      assert si_left!=si and si_left in R, 'left turn is not reachable'
+
+    s_right = sim.apply_control(s, (0.,-disc.max_dtheta))['val']
+    si_right = disc.to_integer(s_right)
+    if itheta>0: # only check if the turn is possible
+      assert si_right!=si and si_right in R, 'right turn is not reachable'
+
+    # It should be possible to accelerate at every state
+    s_faster = sim.apply_control(s, (disc.max_ddx,0.))['val']
+    si_faster = disc.to_integer(s_faster)
+    if ispeed<disc.nspeed-1:
+      assert si_faster!=si and si_faster in R, "can't go faster"
+
+    s_slower = sim.apply_control(s, (-disc.max_ddx,0.))['val']
+    si_slower = disc.to_integer(s_slower)
+    if ispeed>0:
+      assert si_slower!=si and si_slower in R, "can't go slower"
+
+    # The highest speed should cause the car to move
+    if ispeed==disc.nspeed-1 and ix>0 and ix<disc.nx-1 and iy>0 and iy<disc.nx-1:
+      s_next = sim.apply_control(s,(0.,0.))['val']
+      si_next = disc.to_integer(s_next)
+      assert si_next!=si and si_next in R, "no way to move"
 
   print 'OK'
 
 
 
-def continuous_plan(T, cost, gamma, s0, disc=DiscreteStates()):
-  P = planner_discrete_stationary(gamma, disc.nstates(),
-                                  lambda si: cost(disc.to_continuous(si)),
-                                  disc.reachable_states)
+def continuous_plan(T, cost, gamma, s0, disc=disc):
+  P = planner_stationary(gamma, disc.nstates(),
+                         lambda si: cost(disc.to_continuous(si)),
+                         disc.reachable_states)
   Si = apply_policy(disc.to_integer(s0), P, 15)
 
   # convert states to continuous
@@ -201,7 +283,7 @@ def test_discrete_planner():
     x,y,_,_,_ = s
     return path(reshape((x,y),(1,2)))['val']**2
 
-  s0 = (.5, -.7, pi/2, .04, -pi/4)
-  S,Ls,_ = continuous_plan(15, cost, 0.8, s0)
-  sim.show_results(path, S, Ls, animated=0.5)
-  return Si
+  s0 = (-.1, -.7, pi/2, .01, -pi/4)
+  S,Ls,_ = continuous_plan(40, cost, 0.8, s0)
+  sim.show_results(path, S, Ls, animated=0.)
+  return S

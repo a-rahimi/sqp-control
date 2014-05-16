@@ -367,7 +367,7 @@ def test_transition_to_action():
 def test_transition_to_action1():
   # a random problem
   path = sim.genpath()
-  s0 = (.5, -.7, pi/2, .04, -pi/4)
+  s0 = (.5, -.7, pi/2, .04, +pi/4)
   max_dtheta = pi/20
   max_ddx = 0.01
 
@@ -381,8 +381,7 @@ def test_transition_to_action1():
   for s0,s1 in zip(S,S[1:]):
     u = transition_to_action(s0, s1, sim.apply_control, max_dtheta, max_ddx)
     s1hat = sim.apply_control(Scont[-1], u)['val']
-    print s1hat - s1
-    Scont.append( sim.apply_control(Scont[-1], u)['val'] )
+    Scont.append( s1hat )
 
   # show discrete trajectory
   sim.show_results(path, S, Ls, animated=0)

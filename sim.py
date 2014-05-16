@@ -237,7 +237,7 @@ def apply_control(s0,u, derivs={}):
 
   With
 
-    s=(x,alpha,speed,theta)
+    s=(x,y,alpha,speed,theta)
     u=(ddx,dtheta)
 
   s(u) is
@@ -263,7 +263,7 @@ def apply_control(s0,u, derivs={}):
 
   # aggregate into a state object
 
-  res = { 'val': (x,y,alpha,speed,theta) }
+  res = { 'val': array((x,y,alpha,speed,theta)) }
 
   if 'du' in derivs:
     dspeeddu = (1,0)
