@@ -1,7 +1,6 @@
 import pdb
 from numpy import *
 import sim
-#from numba import jit
 
 
 def planner_discrete(T, nstates, cost, reachable_set, s0):
@@ -55,7 +54,7 @@ def planner_stationary(gamma, nstates, cost, reachable_set, max_iterations=10):
   P = [None]*nstates
 
   # value function. initialize with the immediate cost
-  v = c0
+  v = c0 * 0
   vnew = v.copy()
 
   for it in xrange(max_iterations):
@@ -79,27 +78,23 @@ def apply_policy(s0,P,T):
     Si.append( P[Si[-1]] )
   return Si
 
-#@jit(nopython=True)
 def quantize(v, minv, maxv, nv):
   v = clip(v, minv, maxv)
   iv = int(round((v-minv) / (maxv-minv) * (nv-1)))
   assert 0<=iv and iv<nv, 'bad quantization'
   return iv
 
-#@jit(nopython=True)
 def unquantize(iv, minv, maxv, nv):
   assert 0<=iv and iv<nv, 'invalid discrete coordinate'
   v = float32(iv) * (maxv-minv) / (nv-1) + minv
-  assert minv<=v and v<=maxv, 'bad unquantization'
+  #assert minv<=v and v<=maxv, 'bad unquantization'
   return v
 
-#@jit(nopython=True)
 def quantize_angle(v,nv):
   """a quantization that avoids the wraparound. iv=nv-1 corresponds
   the quantum that precedes 2 pi, instead of 2*pi."""
   return quantize(v%(2*pi),0,2*pi*(1-1./nv),nv)
 
-#@jit(nopython=True)
 def unquantize_angle(iv,nv):
   return unquantize(iv,0,2*pi*(1-1./nv),nv)
 
@@ -108,9 +103,11 @@ class DiscreteStates:
   """Functions that map between a continuous vector representation of
   the state to an integer."""
 
-  def __init__(self, nalpha=8, nspeed=10, minspeed=0, maxspeed=.1, ntheta=11,
+  def __init__(self, nalpha=8, nspeed=4, minspeed=0, maxspeed=.1,
                nx=29, minx=-1, maxx=1., miny=-1, maxy=1.,
-               ndtheta=3, max_theta=pi/4, max_dtheta=pi/20, nddx=3, max_ddx=0.01):
+               ntheta=3, max_theta=pi/4,
+               ndtheta=3,  max_dtheta=5*pi/20,
+               nddx=3, max_ddx=5*0.01):
     self.nalpha = nalpha
     self.minspeed = minspeed
     self.maxspeed = maxspeed
@@ -135,7 +132,6 @@ class DiscreteStates:
     return self.nx * self.ny * self.nalpha * self.nspeed * self.ntheta
 
 
-  #@jit
   def to_integer(self, s):
     # parse the state
     x, y, alpha, speed, theta = s
@@ -149,12 +145,10 @@ class DiscreteStates:
 
     return self.qcoords_to_integer(ix,iy,ialpha,ispeed,itheta)
 
-  #@jit
   def qcoords_to_integer(self, ix, iy, ialpha, ispeed, itheta):
     "bijection from (ix,iy,ialpha,ispeed,itheta) to [0...nstates]"
     return (((iy*self.nx + ix)*self.nalpha + ialpha) * self.nspeed + ispeed) * self.ntheta + itheta
 
-  #@jit
   def integer_to_qcoords(self, si):
     "bijection from [0...nstates] to (ix,iy,ialpha,ispeed,itheta)"
     r, itheta = divmod(si, self.ntheta)
@@ -163,7 +157,6 @@ class DiscreteStates:
     iy, ix = divmod(r, self.nx)
     return ix,iy,ialpha,ispeed,itheta
 
-  #@jit
   def to_continuous(self, si):
     ix,iy,ialpha,ispeed,itheta = self.integer_to_qcoords(si)
 
@@ -176,7 +169,6 @@ class DiscreteStates:
 
     return array((x, y, alpha, speed, theta))
 
-  #@jit
   def reachable_states(self, si):
     "the set of discrete states reachable from the given discrete state"
     # return a cached result if available
@@ -195,12 +187,8 @@ class DiscreteStates:
     return res
 
 
-
-# create a module-global instance of this class. don't recreate on
-# reload to speed up reload
 if 'disc' not in globals():
   disc = DiscreteStates()
-
 
 
 def test_discrete_states():
@@ -277,13 +265,16 @@ def test_discrete_planner():
   """
 
   path = sim.genpath()
+  target_speed = .1
+  lambda_speed = 10.
 
   def cost(s):
     "the cost is just the deviation form the path"
-    x,y,_,_,_ = s
-    return path(reshape((x,y),(1,2)))['val']**2
+    x,y,_,speed,_ = s
+    return path(reshape((x,y),(1,2)))['val']**2 + lambda_speed * (speed-target_speed)**2
 
-  s0 = (-.1, -.7, pi/2, .01, -pi/4)
-  S,Ls,_ = continuous_plan(40, cost, 0.8, s0)
+  s0 = (-.5, -.7, pi/2, .01, -pi/4)
+  S,Ls,_ = continuous_plan(40, cost, 0.999, s0)
+  sim.show_results(path, S, Ls, animated=0.1)
   sim.show_results(path, S, Ls, animated=0.)
   return S
