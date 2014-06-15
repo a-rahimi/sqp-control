@@ -31,12 +31,21 @@ def genpath():
     """d||x-u|| = (x-u) / ||x-u||"""
     return (X-u) / circle(X,u)
 
+  def ddcircle(X,u):
+    """d^2/dx^2 ||x-u|| = d (x-u) / ||x-u||
+       = I/||x-u|| - (x-u)(x-u)' / ||x-u||^3
+    """
+    c = circle(X,u)
+    return (eye(2) - outer(X-u,X-u)/c**2) / c
+
   def path(X,derivs={}):
-    """A mixture of two random Gaussians. Closure from genpath"""
+    """||x-u0|| w0 + ||x-u1|| w1 and its derivatives"""
     p = w0 * circle(X,u0) + w1 * circle(X,u1)
     res = {'val': p}
     if 'dx' in derivs:
       res['dx'] = w0 * dcircle(X,u0) + w1 * dcircle(X,u1)
+    if 'dx2' in derivs:
+      res['dx2'] = w0 * ddcircle(X,u0) + w1 * ddcircle(X,u1)
     return res
 
   path.params = {'u0': u0, 'u1': u1,
@@ -330,16 +339,17 @@ def show_results(path, S, costs, animated=0, target_speed=.1):
                 alphas=linspace(0.1,.5,len(S))**2)
 
 
-  fig2 = P.figure(1); fig2.clear()
-  ax2 = fig2.add_subplot(2,1,1)
-  ax3 = fig2.add_subplot(2,1,2)
+  if costs is not None:
+    # show summary statistics
+    fig2 = P.figure(1); fig2.clear()
+    ax2 = fig2.add_subplot(2,1,1)
+    ax3 = fig2.add_subplot(2,1,2)
 
-  # show summary statistics
-  ax2.plot(costs, label='state cost');
-  ax2.set_ylabel('Controller score')
-  ax3.plot([speed for _,_,_,speed,_ in S], label='actual')
-  ax3.plot([0, len(S)], [target_speed, target_speed], 'k--', label='target')
-  ax3.legend(loc='best')
-  ax3.set_ylabel('speed')
+    ax2.plot(costs, label='state cost');
+    ax2.set_ylabel('Controller score')
+    ax3.plot([speed for _,_,_,speed,_ in S], label='actual')
+    ax3.plot([0, len(S)], [target_speed, target_speed], 'k--', label='target')
+    ax3.legend(loc='best')
+    ax3.set_ylabel('speed')
 
   P.draw()
