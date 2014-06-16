@@ -8,6 +8,39 @@ import sim
 import discrete
 
 
+def state_cost(path, target_speed, lambda_speed, s, derivs=set()):
+  """
+  Evaluate the scalar function
+
+    c(s) = p(x)**2 + lambda (speed - target_speed)^2
+
+  and its derivatives wrt s.
+  """
+  x,y,_,speed,_ = s
+
+  # derivatives of p. map ds->dx and ds2->dx2 when computing derivatives
+  p = path(reshape((x,y),(1,2)),
+           derivs=set([{'ds':'dx', 'ds2':'dx2'}[d] for d in derivs]) )
+
+  res = {'val': p['val']**2 + lambda_speed * (speed-target_speed)**2 }
+
+  if 'ds' in derivs:
+    ds = zeros(5)
+    # dc/dx and dc/dy
+    ds[:2] = 2*p['val']*p['dx']
+    # dc/dspeed
+    ds[3] = 2*lambda_speed * (speed-target_speed)
+    res['ds'] = ds
+  if 'ds2' in derivs:
+    ds2 = zeros((5,5))
+    # dc^2/d[x,y]^2
+    ds2[:2,:2] = 2*p['val']*p['dx2'] + 2*outer(p['dx'],p['dx'])
+    ds2[3,3] = 2*lambda_speed
+    res['ds2'] = ds2
+  return res
+
+
+
 def one_step_cost(u, path, s0, target_speed, lambda_speed):
   """
   Evaluate the scalar function
@@ -72,7 +105,6 @@ def test_greedy_controller():
 
     def L(u):
       return one_step_cost(u, path, S[-1], target_speed, lambda_speed)
-
 
     u = greedy_controller(L, s, max_dtheta, max_theta, max_ddx)
     Ls.append( L(u)[0] )
@@ -182,6 +214,14 @@ def test_min_quad_with_linear_eq():
   print 'OK'
 
 
+def make_psd(X):
+  X = X.copy()
+  s,V = linalg.eig(X[:2,:2])
+  s[s<0] = 0
+  X[:2,:2] = dot(V*s,V.T)
+  return X
+
+
 def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
                 sT=None, max_iters=0, show_results=lambda *a:None):
   """
@@ -189,7 +229,7 @@ def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
   states s_1...s_T that
 
       minimize  sum_{t=1}^T  cost(s_t)
-      subject to        s_t = f(u_t, s_{t-1})
+      subject to        s_t = f(s_{t-1}, u_t)
                         | dtheta_t | < max_dtheta
                         | ddx_t | < max_ddx
 
@@ -203,51 +243,77 @@ def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
   else:
     sT = array(sT)
     # interpolate linearly between s0 and sT
-    Sv = [s0*(1-alpha) + sT*alpha for alpha in linspace(0.,1.,T)]
+    Sv = [(s0*(1-alpha) + sT*alpha).ravel() for alpha in linspace(0.,1.,T)]
 
   # the initial sequence of controls. approximate the control signal
   # between each state delta
-  Uv = [s[[3,4]] - s_[[3,4]] for s_,s in zip(Sv,Sv[1:]) ]
+  Uv = [None] + [ transition_to_action(s_,s, dynamics, max_dtheta, max_ddx)
+                  for s_,s in zip(Sv,Sv[1:]) ]
+
+  # apply these to the interpolated states
+  Sv = [s0]
+  for u in Uv[1:]:
+   Sv.append( sim.apply_control(Sv[-1], u)['val'] )
+  L = [ cost(s)['val'] for s in Sv ]
 
   # the instantaneous costs for this iteration
-  L = [inf] * T
   show_results(Sv, L, 0)
 
-  for it in xrange(max_iters):
+  S_old = None
+
+  for it in xrange(1,max_iters):
     show_results(Sv, L, it)
 
     # variables, objective, and constraints of the quadratic problem
     S = [None] * T
     U = [None] * T
-    S[0] = s0
-    objective = 0
-    if sT is not None:
-      # constrain the final state
-      constraints = [S[T-1]==sT]
-    else:
-      constraints = []
+    S[0] = CX.Parameter(5, name='s0')
+    S[0].value = s0
+    objective = zeros(1)
+    constraints = []
 
 
     for t in xrange(1,T):
       # cost(s_t) and its derivatives
       c = cost(Sv[t], {'ds','ds2'})
       # f(u_t, s_{t-1}) and its derivatives
-      f = dynamics(Uv[t], Sv[t-1], {'du','ds'})
+      f = dynamics(Sv[t-1], Uv[t], {'du','ds'})
+      dfds = vstack(f['ds'])
+      dfdu = vstack(f['du'])
+
+      # make d^2f/dx^2 psd
+      c['ds2'] = make_psd(c['ds2'])
+      assert c['ds2'].shape == (5,5)
+
+      # derivative check
+      if False:
+        def test(s):
+          c = cost(s, {'ds','ds2'})
+          return c['ds'], c['ds2']
+        sim.deriv_check(test, Sv[t], 1e-2)
+        print 'OK deriv'
+
 
       L[t] = c['val']
-
-      S[t] = CX.Variable(5, name='s%d'%t)
       U[t] = CX.Variable(2, name='u%d'%t)
+      if t==T-1 and sT is not None:
+        # constrain the final state
+        S[t] = CX.Parameter(5, name='s_T-1')
+        S[t].value = sT
+      else:
+        S[t] = CX.Variable(5, name='s%d'%t)
 
-      objective += c['val'] + sum(c['ds']*S[t]) + 0.5*CX.quad_form(S[t],c['ds2'])
-      constraints += [S[t] == f['val'] + sum(f['ds']*S[t-1]) + sum(f['du']*U[t]),
-                      CX.abs(U[t][0]) < max_ddx,
-                      CX.abs(U[t][1]) < max_dtheta,
-                      CX.abs(S[t][4]) < mx_theta ]
+      objective += c['val'] + S[t].T*c['ds'] + 0.5*CX.quad_form(S[t], c['ds2'])
+      constraints += [S[t] == f['val'] + dfds*S[t-1] + dfdu*U[t],
+                      CX.abs(U[t][0]) <= max_ddx,
+                      CX.abs(U[t][1]) <= max_dtheta,
+                      CX.abs(S[t][4]) <= max_theta ]
 
     # solve for S and U
-    p = CX.Problem(CX.Minimize(objective), constriants)
-    r = p.solve()
+    p = CX.Problem(CX.Minimize(objective), constraints)
+    r = p.solve(solver=CX.CVXOPT, verbose=True)
+    assert isfinite(r)
+    pdb.set_trace()
 
     # convert to reals
     Sv = array([s.value for s in S])
@@ -257,36 +323,6 @@ def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
       break
     S_old = Sv
 
-def state_cost(path, target_speed, lambda_speed, s, derivs=set()):
-  """
-  Evaluate the scalar function
-
-    c(s) = p(x)**2 + lambda (speed - target_speed)^2
-
-  and its derivatives wrt s.
-  """
-  x,y,_,speed,_ = s
-
-  # derivatives of p. map ds->dx and ds2->dx2 when computing derivatives
-  p = path(reshape((x,y),(1,2)),
-           derivs=set([{'ds':'dx', 'ds2':'dx2'}[d] for d in derivs]) )
-
-  res = {'val':  p['val']**2 + lambda_speed * (speed-target_speed)**2 }
-
-  if 'ds' in derivs:
-    ds = zeros(5)
-    # dc/dx and dc/dy
-    ds[:2] = 2*p['val']*p['dx']
-    # dc/dspeed
-    ds[3] = 2*lambda_speed * (speed-target_speed)
-    res['ds'] = ds
-  if 'ds2' in derivs:
-    ds2 = zeros((5,5))
-    # dc^2/d[x,y]^2
-    ds2[:2,:2] = 2*p['val']*p['dx2'] + 2*outer(p['dx'],p['dx'])
-    ds2[3,3] = 2*lambda_speed
-    res['ds2'] = ds2
-  return res
 
 def show_results_per_iter(path, s0, sT, S, L, it):
   sim.show_results(path, S, L, animated=0)
@@ -299,11 +335,12 @@ def show_results_per_iter(path, s0, sT, S, L, it):
 
   print 'iteration', it
 
+
 def test_planner_sqp_short():
   path = sim.genpath()
 
-  s0 = (.5, -.7, pi/2, .04, -pi/4)
-  sT = (.4, -.6, 0, .04, 0)
+  s0 = (.5, -.7, pi/2, .04, pi/4)
+  sT = (.1, -.3, pi, .04, 0)
 
   max_dtheta = pi/20
   max_theta = pi/4
@@ -311,8 +348,8 @@ def test_planner_sqp_short():
   target_speed = .1
   lambda_speed = 10.
 
-  S = planner_sqp(15,
-                  lambda s,*k: state_cost(path, target_speed, lambda_speed, s,*k),
+  S = planner_sqp(10,
+                  lambda s,*k:state_cost(path, target_speed, lambda_speed, s,*k),
                   sim.apply_control, s0, max_dtheta, max_theta, max_ddx,
                   sT=sT, max_iters=30,
                   show_results= lambda *a: show_results_per_iter(path, s0,sT,*a))
@@ -386,10 +423,10 @@ def transition_to_action(s0,s1, dynamics, max_dtheta, max_ddx, max_iter=30,
 
     # linearize || f(s0,u) - s1 ||^2 about u0 and solve as a QP
     u = CX.Variable(len(u0), name='u')
-    objective = CX.sum(CX.square(array(f['val']) + vstack(f['du'])*(u-u0) - s1))
+    objective = CX.square(CX.norm( array(f['val']) + vstack(f['du'])*(u-u0) - s1 ))
     p = CX.Problem(CX.Minimize(objective),
-                      [CX.abs(u[0]) <= max_ddx,
-                       CX.abs(u[1]) <= max_dtheta])
+                   [CX.abs(u[0]) <= max_ddx,
+                    CX.abs(u[1]) <= max_dtheta])
     r = p.solve()
     unew = array(u.value.flat)
 

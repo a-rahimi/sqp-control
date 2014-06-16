@@ -33,7 +33,7 @@ def genpath():
 
   def ddcircle(X,u):
     """d^2/dx^2 ||x-u|| = d (x-u) / ||x-u||
-       = I/||x-u|| - (x-u)(x-u)' / ||x-u||^3
+                        = I/||x-u|| - (x-u)(x-u)' / ||x-u||^3
     """
     c = circle(X,u)
     return (eye(2) - outer(X-u,X-u)/c**2) / c
@@ -57,11 +57,11 @@ def draw_path(ax, path):
   """draw the given the path function on the matplotlib axis"""
 
   # Evaluate the path on a grid
-  X,Y = meshgrid(linspace(-1,1,40), linspace(-1,1,40))
+  X,Y = meshgrid(linspace(-1,1,80), linspace(-1,1,80))
   Z = path(hstack((X.reshape(-1,1), Y.reshape(-1,1))))['val'].reshape(X.shape)
 
   # representative values of the path function
-  v = linspace(Z.min(), Z.max(),10)
+  v = linspace(Z.min(), Z.max(),30)
 
   # default curve parameters
   linewidths = zeros(len(v)) + .5
@@ -299,7 +299,7 @@ def deriv_check(f, x, rtol, dh=1e-4):
   numeric = f(x+dx)[0] - f(x)[0]
   analytic = dot(f(x)[1], dx)
 
-  assert abs(analytic-numeric)/linalg.norm(dx) < rtol, \
+  assert all(abs(analytic-numeric)/linalg.norm(dx) < rtol), \
     'num %s ana %s'%(numeric, analytic)
 
 
