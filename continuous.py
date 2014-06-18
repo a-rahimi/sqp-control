@@ -222,32 +222,42 @@ def make_psd(X):
   return X
 
 
-def reachable(T, s0, sT, dynamics,  max_dtheta, max_theta, max_ddx,
+def reachable(T, s0, sT, cost, dynamics,  max_dtheta, max_theta, max_ddx,
               max_line_search=30, show_results=lambda *a:None):
   """Find control signals u_1...u_T, u_t=(ddx_t,dtheta_t) and the
   ensuing states s_1...s_T that
 
-        minimize   || s_t - sT ||
+        minimize   L(s_0,...,s_{T-1})
       subject to   s_t = f(s_{t-1}, u_t)
                    | dtheta_t | < max_dtheta
                    | ddx_t | < max_ddx
 
+  One of sT or cost must be None.  if sT is set, then
+        L = || s_{t-1} - sT ||
+  otherwise, it is
+        L = sum_{t=0}^{T-1}  cost(s_t)
+
   Solves this as a Sequential Quadratic program by approximating L by
-  a quadratic, and f by an affine function.
+  a quadratic and f by an affine function.
   """
   s0 = array(s0)
-  sT = array(sT)
+  if sT is not None:
+    sT = array(sT)
+  assert (cost is None) != (sT is None), 'only one of cost or sT may be specified'
 
-  # initial iterates
+  # initial iterates and objective terms
   Sv = [s0] * T
   Uv = [None] + [zeros(2)]*T
+  L = None
+  if cost:
+    L = [cost(s0)['val']] * T
 
   last_obj = None   # last objective value attained
   step = 1.        # last line search step size
   iters = 0
   n_line_searches = 0
   while True:
-    show_results(Sv, iters)
+    show_results(Sv, L, iters)
     iters += 1
 
     # variables, objective, and constraints of the quadratic problem
@@ -256,6 +266,8 @@ def reachable(T, s0, sT, dynamics,  max_dtheta, max_theta, max_ddx,
     S[0] = CX.Parameter(5, name='s0')
     S[0].value = s0
     constraints = []
+    if cost:
+      objective = zeros(1)
 
     # define the QP
     for t in xrange(1,T):
@@ -277,8 +289,16 @@ def reachable(T, s0, sT, dynamics,  max_dtheta, max_theta, max_ddx,
         CX.abs(U[t][1]) <= max_dtheta,
         CX.abs(S[t][4]) <= max_theta ]
 
-    # objective is || s_t - sT ||
-    objective = CX.square(CX.norm(S[T-1] - sT))
+      if cost:
+        # accumulate objective
+        c = cost(Sv[t], derivs={'ds','ds2'})
+        c['ds2'] = make_psd(c['ds2'])
+        objective += c['val'] + (S[t]-Sv[t]).T*c['ds'] + 0.5*CX.quad_form(S[t]-Sv[t],
+                                                                          c['ds2'])
+
+    if sT is not None:
+      # objective is || s_t - sT ||
+      objective = CX.square(CX.norm(S[T-1] - sT))
 
 
     # solve for S and U
@@ -305,7 +325,11 @@ def reachable(T, s0, sT, dynamics,  max_dtheta, max_theta, max_ddx,
         Svs.append( sim.apply_control(Svs[-1], us)['val'] )
 
       # objective value based on the last state
-      obj = sum((Svs[-1]-sT)**2)
+      if cost:
+        L = [ cost(s)['val'] for s in Svs ]
+        obj = sum(L)
+      else:
+        obj = sum((Svs[-1]-sT)**2)
 
       if last_obj is None or obj < last_obj:
         step *= 1.1                 # lengthen the step for the next round
@@ -324,23 +348,6 @@ def reachable(T, s0, sT, dynamics,  max_dtheta, max_theta, max_ddx,
 
   return Sv,Uv
 
-
-def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
-                sT=None, max_iters=10, show_results=lambda *a:None):
-  """
-  Find control signals u_1...u_T, u_t=(ddx_t,dtheta_t) and the ensuing
-  states s_1...s_T that
-
-      minimize  sum_{t=1}^T  cost(s_t)
-      subject to        s_t = f(s_{t-1}, u_t)
-                        | dtheta_t | < max_dtheta
-                        | ddx_t | < max_ddx
-
-  Solves this as a Sequential Quadratic program by approximating L by
-  a quadratic, and f by an affine function.
-  """
-  raise NotImplementedError
-  objective += c['val'] + S[t].T*c['ds'] + 0.5*CX.quad_form(S[t], c['ds2'])
 
 
 
@@ -368,17 +375,16 @@ def test_reachable():
   target_speed = .1
   lambda_speed = 10.
 
-  S,U = reachable(20, s0, sT, sim.apply_control, max_dtheta, max_theta, max_ddx,
+  S,U = reachable(20, s0, sT, None, sim.apply_control, max_dtheta, max_theta, max_ddx,
                   show_results=
-                  lambda S,it: show_results_per_iter(path, s0,sT,S,None,it))
+                  lambda *a: show_results_per_iter(path, s0, sT, *a))
   show_results_per_iter(path, s0, sT, S, None, 0, animated=.1)
 
 
-def test_planner_sqp_short():
+def test_sqp_planner():
   path = sim.genpath()
 
-  s0 = (.5, -.7, pi/2, .04, pi/4)
-  sT = (.0, -.3, pi, .04, 0)
+  s0 = (.0, .0, pi/2, .04, pi/4)
 
   max_dtheta = pi/20
   max_theta = pi/4
@@ -386,52 +392,14 @@ def test_planner_sqp_short():
   target_speed = .1
   lambda_speed = 10.
 
-  S = planner_sqp(10,
-                  lambda s,*k:state_cost(path, target_speed, lambda_speed, s,*k),
-                  sim.apply_control, s0, max_dtheta, max_theta, max_ddx,
-                  sT=sT, max_iters=30,
-                  show_results= lambda *a: show_results_per_iter(path, s0,sT,*a))
+  S,U = reachable(40, s0, None,
+                  lambda s,**kw: state_cost(path, target_speed, lambda_speed, s,**kw),
+                  sim.apply_control, max_dtheta, max_theta, max_ddx,
+                  show_results=
+                  lambda *a: show_results_per_iter(path, s0, None, *a))
+  show_results_per_iter(path, s0, None, S, None, 0, animated=.1)
 
 
-def test_planner_sqp_long():
-  path = sim.genpath()
-
-  s0 = (.5, -.7, pi/2, .04, -pi/4)
-  x,y,alpha,speed,theta = s0
-  u0 = 0.1, 0.01
-  max_dtheta = pi/20
-  max_theta = pi/4
-  max_ddx = 0.01
-  target_speed = .1
-  lambda_speed = 10.
-
-  def cost(s, derivs=set()):
-    """p(x)**2 + lambda (speed - target_speed)^2 and its derivatives wrt s"""
-
-    x,y,_,speed,_ = s
-
-    p = path(reshape((x,y),(1,2)),
-             derivs=set([{'ds':'dx', 'ds2':'dx2'}[d] for d in derivs]) )
-
-    res = {'val':  p['val']**2 + lambda_speed * (speed-target_speed)**2 }
-
-    if 'ds' in derivs:
-      ds = zeros(5)
-      ds[[0,1,3]] = 2*p['val']*p['dx'] + 2*lambda_speed * (speed-target_speed)
-      res['ds'] = ds
-    if 'ds2' in derives:
-      ds2 = zeros((5,5))
-      ds2[ix_([0,1,3],[0,1,3])] = 2*p['val']*p['dx2'] + 2*outer(p['dx'],p['dx'])
-      res['ds2'] = ds2
-    return res
-
-  def show_results(S, L, it):
-    sim.show_results(path, S, L, animated=0)
-    P.figure(0).title('iteration %d'%it)
-    print 'iteration', it
-
-  S = planner_sqp(15, cost, apply_control, s0, max_dtheta, max_theta, max_ddx,
-                max_iters=30, show_results=show_results)
 
 
 def transition_to_action(s0,s1, dynamics, max_dtheta, max_ddx, max_iter=30,
