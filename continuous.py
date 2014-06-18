@@ -222,8 +222,111 @@ def make_psd(X):
   return X
 
 
+def reachable(T, s0, sT, dynamics,  max_dtheta, max_theta, max_ddx,
+              max_line_search=30, show_results=lambda *a:None):
+  """Find control signals u_1...u_T, u_t=(ddx_t,dtheta_t) and the
+  ensuing states s_1...s_T that
+
+        minimize   || s_t - sT ||
+      subject to   s_t = f(s_{t-1}, u_t)
+                   | dtheta_t | < max_dtheta
+                   | ddx_t | < max_ddx
+
+  Solves this as a Sequential Quadratic program by approximating L by
+  a quadratic, and f by an affine function.
+  """
+  s0 = array(s0)
+  sT = array(sT)
+
+  # initial iterates
+  Sv = [s0] * T
+  Uv = [None] + [zeros(2)]*T
+
+  last_obj = None   # last objective value attained
+  step = 1.        # last line search step size
+  iters = 0
+  n_line_searches = 0
+  while True:
+    show_results(Sv, iters)
+    iters += 1
+
+    # variables, objective, and constraints of the quadratic problem
+    S = [None] * T
+    U = [None] * T
+    S[0] = CX.Parameter(5, name='s0')
+    S[0].value = s0
+    constraints = []
+
+    # define the QP
+    for t in xrange(1,T):
+      # f(u_t, s_{t-1}) and its derivatives
+      f = dynamics(Sv[t-1], Uv[t], {'du','ds'})
+      dfds = vstack(f['ds'])
+      dfdu = vstack(f['du'])
+
+      # define u_t and s_t
+      U[t] = CX.Variable(2, name='u%d'%t)
+      S[t] = CX.Variable(5, name='s%d'%t)
+
+      # constraints:
+      #     s_t = linearized f(s_t-1, u_t) about previous iterate
+      #     and bounds on s_t and u_t
+      constraints += [
+        S[t] == f['val'] + dfds*(S[t-1]-Sv[t-1]) + dfdu*(U[t]-Uv[t]),
+        CX.abs(U[t][0]) <= max_ddx,
+        CX.abs(U[t][1]) <= max_dtheta,
+        CX.abs(S[t][4]) <= max_theta ]
+
+    # objective is || s_t - sT ||
+    objective = CX.square(CX.norm(S[T-1] - sT))
+
+
+    # solve for S and U
+    p = CX.Problem(CX.Minimize(objective), constraints)
+    r = p.solve(solver=CX.CVXOPT, verbose=False)
+    assert isfinite(r)
+
+    # line search on U, from Uv along U-Uv
+    line_search_failed = True
+    while n_line_searches < max_line_search:
+      n_line_searches += 1
+
+      # compute and apply the controls along the step
+      Us = []
+      Svs = [s0]
+      for u,u0 in zip(U[1:],Uv[1:]):
+        # a step along the search direction
+        us = u0 + step * (ravel(u.value)-u0)
+        # make it feasible
+        us[0] = clip(us[0], -max_ddx, max_ddx)
+        us[1] = clip(us[1], -max_dtheta, max_dtheta)
+        Us.append(us)
+        # apply controls
+        Svs.append( sim.apply_control(Svs[-1], us)['val'] )
+
+      # objective value based on the last state
+      obj = sum((Svs[-1]-sT)**2)
+
+      if last_obj is None or obj < last_obj:
+        step *= 1.1                 # lengthen the step for the next round
+        line_search_failed = False  # converged
+        break
+      else:
+        step *= 0.7                 # shorten the step and try again
+
+    if line_search_failed:          # converged
+      break                         # throw away this iterate
+    else:
+      # accept the iterate
+      Sv = Svs
+      Uv = [None] + Us
+      last_obj = obj
+
+  return Sv,Uv
+
+
 def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
-                sT=None, max_iters=0, show_results=lambda *a:None):
+                sT=None, max_iters=10, show_results=lambda *a:None):
   """
   Find control signals u_1...u_T, u_t=(ddx_t,dtheta_t) and the ensuing
   states s_1...s_T that
@@ -236,111 +339,46 @@ def planner_sqp(T, cost, dynamics, s0, max_dtheta, max_theta, max_ddx,
   Solves this as a Sequential Quadratic program by approximating L by
   a quadratic, and f by an affine function.
   """
-  s0 = array(s0)
-  # the initial sequence of states and controls
-  if sT is None:
-    raise NotImplementedError
-  else:
-    sT = array(sT)
-    # interpolate linearly between s0 and sT
-    Sv = [(s0*(1-alpha) + sT*alpha).ravel() for alpha in linspace(0.,1.,T)]
-
-  # the initial sequence of controls. approximate the control signal
-  # between each state delta
-  Uv = [None] + [ transition_to_action(s_,s, dynamics, max_dtheta, max_ddx)
-                  for s_,s in zip(Sv,Sv[1:]) ]
-
-  # apply these to the interpolated states
-  Sv = [s0]
-  for u in Uv[1:]:
-   Sv.append( sim.apply_control(Sv[-1], u)['val'] )
-  L = [ cost(s)['val'] for s in Sv ]
-
-  # the instantaneous costs for this iteration
-  show_results(Sv, L, 0)
-
-  S_old = None
-
-  for it in xrange(1,max_iters):
-    show_results(Sv, L, it)
-
-    # variables, objective, and constraints of the quadratic problem
-    S = [None] * T
-    U = [None] * T
-    S[0] = CX.Parameter(5, name='s0')
-    S[0].value = s0
-    objective = zeros(1)
-    constraints = []
+  raise NotImplementedError
+  objective += c['val'] + S[t].T*c['ds'] + 0.5*CX.quad_form(S[t], c['ds2'])
 
 
-    for t in xrange(1,T):
-      # cost(s_t) and its derivatives
-      c = cost(Sv[t], {'ds','ds2'})
-      # f(u_t, s_{t-1}) and its derivatives
-      f = dynamics(Sv[t-1], Uv[t], {'du','ds'})
-      dfds = vstack(f['ds'])
-      dfdu = vstack(f['du'])
 
-      # make d^2f/dx^2 psd
-      c['ds2'] = make_psd(c['ds2'])
-      assert c['ds2'].shape == (5,5)
-
-      # derivative check
-      if False:
-        def test(s):
-          c = cost(s, {'ds','ds2'})
-          return c['ds'], c['ds2']
-        sim.deriv_check(test, Sv[t], 1e-2)
-        print 'OK deriv'
-
-
-      L[t] = c['val']
-      U[t] = CX.Variable(2, name='u%d'%t)
-      if t==T-1 and sT is not None:
-        # constrain the final state
-        S[t] = CX.Parameter(5, name='s_T-1')
-        S[t].value = sT
-      else:
-        S[t] = CX.Variable(5, name='s%d'%t)
-
-      objective += c['val'] + S[t].T*c['ds'] + 0.5*CX.quad_form(S[t], c['ds2'])
-      constraints += [S[t] == f['val'] + dfds*S[t-1] + dfdu*U[t],
-                      CX.abs(U[t][0]) <= max_ddx,
-                      CX.abs(U[t][1]) <= max_dtheta,
-                      CX.abs(S[t][4]) <= max_theta ]
-
-    # solve for S and U
-    p = CX.Problem(CX.Minimize(objective), constraints)
-    r = p.solve(solver=CX.CVXOPT, verbose=True)
-    assert isfinite(r)
-    pdb.set_trace()
-
-    # convert to reals
-    Sv = array([s.value for s in S])
-    Uv = array([u.value for u in U[1:]])
-    # check convergence
-    if S_old is not None and all(abs(S_old-Sv) < 1e-5):
-      break
-    S_old = Sv
-
-
-def show_results_per_iter(path, s0, sT, S, L, it):
-  sim.show_results(path, S, L, animated=0)
+def show_results_per_iter(path, s0, sT, S, L, it, animated=0):
   P.figure(0).suptitle('iteration %d'%it)
-
+  sim.show_results(path, S, L, animated=animated)
   if s0 is not None:
     sim.draw_car(P.figure(0).get_axes()[0], s0, color='r')
   if sT is not None:
     sim.draw_car(P.figure(0).get_axes()[0], sT, color='r')
+  P.draw()
 
   print 'iteration', it
+
+
+def test_reachable():
+  path = sim.genpath()
+
+  s0 = (.0, .0, pi/2, .04, pi/4)
+  sT = (.1, -.2, pi/2, .04, 0)
+
+  max_dtheta = pi/20
+  max_theta = pi/4
+  max_ddx = 0.01
+  target_speed = .1
+  lambda_speed = 10.
+
+  S,U = reachable(20, s0, sT, sim.apply_control, max_dtheta, max_theta, max_ddx,
+                  show_results=
+                  lambda S,it: show_results_per_iter(path, s0,sT,S,None,it))
+  show_results_per_iter(path, s0, sT, S, None, 0, animated=.1)
 
 
 def test_planner_sqp_short():
   path = sim.genpath()
 
   s0 = (.5, -.7, pi/2, .04, pi/4)
-  sT = (.1, -.3, pi, .04, 0)
+  sT = (.0, -.3, pi, .04, 0)
 
   max_dtheta = pi/20
   max_theta = pi/4

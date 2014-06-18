@@ -61,7 +61,7 @@ def draw_path(ax, path):
   Z = path(hstack((X.reshape(-1,1), Y.reshape(-1,1))))['val'].reshape(X.shape)
 
   # representative values of the path function
-  v = linspace(Z.min(), Z.max(),30)
+  v = linspace(Z.min(), Z.max(),10)
 
   # default curve parameters
   linewidths = zeros(len(v)) + .5
@@ -76,7 +76,7 @@ def draw_path(ax, path):
   colors[izero] = 'k'
 
   # contour plot for the given values
-  ax.contour(X,Y,Z,v, colors=colors, linewidths=linewidths)
+  return ax.contour(X,Y,Z,v, colors=colors, linewidths=linewidths)
 
 
 def test_path():
@@ -222,7 +222,8 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None,
       P.draw()
       time.sleep(sleep)
 
-  P.draw()
+
+
 
 
 def test_animate_car():
@@ -239,6 +240,7 @@ def test_animate_car():
   P.axis('equal')
   animate_car(P.gca(), S, remove_car=False, sleep=0,
               alphas=linspace(0.1,1.,len(S))**4)
+  P.draw()
 
 
 def apply_control(s0,u, derivs={}):
@@ -330,14 +332,15 @@ def show_results(path, S, costs, animated=0, target_speed=.1):
   ax = fig1.add_subplot(1,1,1)
   ax.axis('scaled')
   ax.axis([-1,1,-1,1])
-  draw_path(ax, path)
+
+  if path:
+    draw_path(ax, path)
 
   if animated:
     animate_car(ax, S, remove_car=True, sleep=animated)
   else:
     animate_car(ax, S, remove_car=False, sleep=0,
                 alphas=linspace(0.1,.5,len(S))**2)
-
 
   if costs is not None:
     # show summary statistics
@@ -348,8 +351,7 @@ def show_results(path, S, costs, animated=0, target_speed=.1):
     ax2.plot(costs, label='state cost');
     ax2.set_ylabel('Controller score')
     ax3.plot([speed for _,_,_,speed,_ in S], label='actual')
-    ax3.plot([0, len(S)], [target_speed, target_speed], 'k--', label='target')
+    ax3.plot([0, len(S)], [target_speed, target_speed], 'k--',
+                       label='target')
     ax3.legend(loc='best')
     ax3.set_ylabel('speed')
-
-  P.draw()
