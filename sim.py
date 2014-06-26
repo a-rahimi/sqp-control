@@ -8,7 +8,7 @@ import itertools
 # problem parameters
 car_length = 0.1
 
-def genpath():
+def genpath(w0=None,w1=None):
   """Generate a random smooth path, represented as an implicit
   function f(x)=0, x \in R^2.
 
@@ -20,8 +20,10 @@ def genpath():
   u1 = array([1., 0])
 
   # weights
-  w0 = .5+random.rand()
-  w1 = -.5-random.rand()
+  if w0 is None:
+    w0 = .5+random.rand()
+  if w1 is None:
+    w1 = -.5-random.rand()
 
   def circle(X,u):
     "||x-u||"
@@ -188,7 +190,7 @@ def test_draw_car():
 
 
 def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None,
-                **kwargs):
+                save_output=None, **kwargs):
   """animate the car along the given state sequence. returns an object
   that represent's the car's shape for subsequent animation.  by default,
   produces an animation. but if remove_car=False, draws a final frame with
@@ -202,7 +204,7 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None,
   if alphas is None:
     alphas = itertools.repeat(1.)
 
-  for s,alpha in itertools.izip(S,alphas):
+  for i,(s,alpha) in enumerate(itertools.izip(S,alphas)):
     # parse the state
     x,y,_,_,_  = s
     # append to the trail
@@ -221,6 +223,10 @@ def animate_car(ax, S, drawing=None, remove_car=True, sleep=.1, alphas=None,
     if sleep:
       P.draw()
       time.sleep(sleep)
+    if save_output:
+      save_output(ax, i)
+
+
 
 
 
@@ -326,7 +332,7 @@ def test_apply_control():
   print 'OK'
 
 
-def show_results(path, S, costs, animated=0, target_speed=.1):
+def show_results(path, S, costs, animated=0, target_speed=.1, save_output=None):
   P.ion()
   fig1 = P.figure(0); fig1.clear()
   ax = fig1.add_subplot(1,1,1)
@@ -337,9 +343,9 @@ def show_results(path, S, costs, animated=0, target_speed=.1):
     draw_path(ax, path)
 
   if animated:
-    animate_car(ax, S, remove_car=True, sleep=animated)
+    animate_car(ax, S, remove_car=True, sleep=animated, save_output=save_output)
   else:
-    animate_car(ax, S, remove_car=False, sleep=0,
+    animate_car(ax, S, remove_car=False, sleep=0, save_output=save_output,
                 alphas=linspace(0.1,.5,len(S))**2)
 
   if costs is not None:

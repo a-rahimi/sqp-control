@@ -257,7 +257,9 @@ def reachable(T, s0, sT, cost, dynamics,  max_dtheta, max_theta, max_ddx,
   iters = 0
   n_line_searches = 0
   while True:
-    show_results(Sv, L, iters)
+    show_results(Sv, L, '%d, %d line searches so far. step size %g'%(iters,
+                                                                     n_line_searches,
+                                                                     step))
     iters += 1
 
     # variables, objective, and constraints of the quadratic problem
@@ -352,7 +354,7 @@ def reachable(T, s0, sT, cost, dynamics,  max_dtheta, max_theta, max_ddx,
 
 
 def show_results_per_iter(path, s0, sT, S, L, it, animated=0):
-  P.figure(0).suptitle('iteration %d'%it)
+  P.figure(0).suptitle('iteration %s'%it)
   sim.show_results(path, S, L, animated=animated)
   if s0 is not None:
     sim.draw_car(P.figure(0).get_axes()[0], s0, color='r')
@@ -367,7 +369,7 @@ def test_reachable():
   path = sim.genpath()
 
   s0 = (.0, .0, pi/2, .04, pi/4)
-  sT = (.1, -.2, pi/2, .04, 0)
+  sT = (-.2, .4, 0, .0, 0)
 
   max_dtheta = pi/20
   max_theta = pi/4
