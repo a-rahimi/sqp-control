@@ -110,7 +110,7 @@ class CarDrawing():
     self.trail.remove()
 
 
-def draw_car(ax, s, **kwargs):
+def draw_car(ax, s, car_length=car_length, **kwargs):
   # parse the state
   x,y,alpha,speed,theta = s
 
